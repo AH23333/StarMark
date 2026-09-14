@@ -1,0 +1,8 @@
+{
+  "extName": {
+    "message": "StarMark"
+  },
+  "extDesc": {
+    "message": "A personal library that unifies GitHub Stars and browser bookmarks"
+  }
+}

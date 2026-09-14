@@ -4,6 +4,7 @@ import { clearAll, allItems } from '~/core/db'
 import { buildBackup, parseBackup, restoreBackup } from '~/core/backup'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
 import { sendToBackground } from '~/core/msg'
+import { LANGS, getCurrentLangSetting, setLang, useT, type Lang } from '~/core/i18n'
 import { type ThemePreference, getThemePreference, initTheme } from '~/core/theme'
 import { CTX_MENU_ACTIONS, type CtxMenuConfig, type UIPrefs } from '~/core/types'
 import type { BgState } from '~/core/msg'
@@ -21,6 +22,8 @@ function download(content: string, filename: string): void {
 }
 
 export default function App() {
+  const t = useT()
+  const [langSetting, setLangSetting] = useState<Lang | 'auto'>('auto')
   const [token, setToken] = useState('')
   const [state, setState] = useState<BgState | null>(null)
   const [health, setHealth] = useState<HealthReport | null>(null)
@@ -35,7 +38,7 @@ export default function App() {
     void sendToBackground({ type: 'get-state' }).then((res) => {
       if (res.state) setState(res.state)
     })
-    void allItems().then((items) => setHealth(buildHealthReport(items)))
+    void allItems().then((items) => setHealth(buildHealthReport(items, 14, t)))
   }, [])
 
   useEffect(() => {
@@ -51,6 +54,7 @@ export default function App() {
       setLetterAvatar(ui.letterAvatar ?? false)
     })
     void getThemePreference().then(setTheme)
+    void getCurrentLangSetting().then(setLangSetting)
     void refresh()
     return () => disposeTheme()
   }, [refresh])
@@ -58,24 +62,25 @@ export default function App() {
   const saveToken = async () => {
     const pat = token.trim()
     if (!pat) {
-      setMsg({ kind: 'err', text: '请输入 Token' })
+      setMsg({ kind: 'err', text: t('msg.err.tokenRequired') })
       return
     }
     await browser.storage.local.set({ pat })
-    setMsg({ kind: 'ok', text: 'Token 已保存，正在同步 Stars…' })
+    setMsg({ kind: 'ok', text: t('msg.ok.tokenSaved') })
     const st = setTimeout(refresh, 2500)
     return () => clearTimeout(st)
   }
 
   const saveInterval = async () => {
     await browser.storage.local.set({ syncIntervalHours: intervalHours })
-    setMsg({ kind: 'ok', text: `已设置每 ${intervalHours} 小时自动同步` })
+    setMsg({ kind: 'ok', text: t('msg.ok.intervalSet', { h: intervalHours }) })
   }
 
   const changeTheme = async (value: ThemePreference) => {
     setTheme(value)
     await browser.storage.local.set({ theme: value })
-    setMsg({ kind: 'ok', text: value === 'auto' ? '已跟随浏览器主题' : `已使用${value === 'light' ? '浅色' : '深色'}主题` })
+    const name = value === 'auto' ? t('opt.theme.auto') : t(`opt.theme.${value}`)
+    setMsg({ kind: 'ok', text: value === 'auto' ? t('msg.ok.themeFollow') : t('msg.ok.themeUsed', { name }) })
   }
 
   const updateCtx = async (key: keyof CtxMenuConfig, checked: boolean) => {
@@ -83,37 +88,37 @@ export default function App() {
     setCtxMenu(next)
     const s = await browser.storage.local.get('ui')
     await browser.storage.local.set({ ui: { ...(s.ui ?? {}), ctxMenu: next } })
-    setMsg({ kind: 'ok', text: '右键菜单设置已保存（重开侧边栏生效）' })
+    setMsg({ kind: 'ok', text: t('msg.ok.ctxSaved') })
   }
 
   const updateLetterAvatar = async (v: boolean) => {
     setLetterAvatar(v)
     const s = await browser.storage.local.get('ui')
     await browser.storage.local.set({ ui: { ...(s.ui ?? {}), letterAvatar: v } })
-    setMsg({ kind: 'ok', text: '显示设置已保存' })
+    setMsg({ kind: 'ok', text: t('msg.ok.displaySaved') })
   }
 
   const doSync = async () => {
-    setMsg({ kind: 'ok', text: '正在同步…' })
+    setMsg({ kind: 'ok', text: t('msg.sync.progress') })
     const res = await sendToBackground({ type: 'run-sync', force: true })
-    setMsg({ kind: res.ok ? 'ok' : 'err', text: res.ok ? '同步完成' : `同步失败：${res.error ?? '未知错误'}` })
+    setMsg({ kind: res.ok ? 'ok' : 'err', text: res.ok ? t('sync.ok') : t('sync.failed', { err: res.error ?? t('sync.unknownError') }) })
     refresh()
   }
 
   const doRebuild = async () => {
     const res = await sendToBackground({ type: 'rebuild-index' })
-    setMsg({ kind: res.ok ? 'ok' : 'err', text: res.ok ? '已触发索引重建' : `重建失败：${res.error}` })
+    setMsg({ kind: res.ok ? 'ok' : 'err', text: res.ok ? t('msg.ok.rebuildIndex') : t('msg.err.rebuildFailed', { err: res.error ?? '' }) })
   }
 
   const doExport = async () => {
-    const pass = window.prompt('可选：输入备份口令（留空则导出未加密 JSON）')
+    const pass = window.prompt(t('msg.export.prompt'))
     if (pass === null) return
     try {
       const { content, encrypted } = await buildBackup(pass || undefined)
       download(content, `starmark-backup-${Date.now()}.json`)
-      setMsg({ kind: 'ok', text: encrypted ? '已加密导出备份' : '已导出备份（未加密）' })
+      setMsg({ kind: 'ok', text: encrypted ? t('msg.export.okEncrypted') : t('msg.export.okPlain') })
     } catch (e) {
-      setMsg({ kind: 'err', text: `导出失败：${(e as Error).message}` })
+      setMsg({ kind: 'err', text: t('msg.export.failed', { err: (e as Error).message }) })
     }
   }
 
@@ -121,26 +126,26 @@ export default function App() {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    const pass = window.prompt('如果备份已加密，请输入口令（否则留空）')
+    const pass = window.prompt(t('msg.import.promptPass'))
     if (pass === null) return
     try {
       const text = await file.text()
       const payload = await parseBackup(text, pass || undefined)
-      if (!window.confirm(`导入将覆盖当前 ${payload.items.length} 条本地条目（保留 Token 与设置），确认继续？`)) return
+      if (!window.confirm(t('msg.import.confirm', { n: payload.items.length }))) return
       await restoreBackup(payload.items)
-      setMsg({ kind: 'ok', text: `已导入 ${payload.items.length} 条数据` })
+      setMsg({ kind: 'ok', text: t('msg.import.ok', { n: payload.items.length }) })
       refresh()
     } catch (err) {
-      setMsg({ kind: 'err', text: `导入失败：${(err as Error).message}` })
+      setMsg({ kind: 'err', text: t('msg.import.failed', { err: (err as Error).message }) })
     }
   }
 
   const doClear = async () => {
-    if (!confirm('将删除所有本地缓存的 Stars / 书签数据、Token 与设置，确认？')) return
+    if (!confirm(t('msg.clear.confirm'))) return
     await clearAll()
     setToken('')
     setHealth(null)
-    setMsg({ kind: 'ok', text: '已清除全部本地数据' })
+    setMsg({ kind: 'ok', text: t('msg.clear.ok') })
     refresh()
   }
 
@@ -149,32 +154,63 @@ export default function App() {
 
   return (
     <div className="page">
-      <h1>StarMark 设置</h1>
+      <h1>{t('opt.title')}</h1>
 
       <section className="panel">
-        <h2>1. GitHub 连接（本地 Token）</h2>
-        <p className="desc">
-          创建一个 Fine-grained PAT（GitHub → Settings → Developer settings → Fine-grained tokens），只需勾选
-          <code> Starring: Read </code> 用户权限，即可读取你的 Stars。数据与 Token 仅存在本机。
-        </p>
-        <input type="password" placeholder="github_pat_…" value={token} onChange={(e) => setToken(e.target.value)} />
+        <h2>{t('opt.lang.heading')}</h2>
         <div className="row">
-          <button className="btn primary" onClick={saveToken}>
-            保存并同步
-          </button>
-          {state?.ghLogin && <span className="login">已连接：{state.ghLogin}</span>}
+          <select
+            value={langSetting}
+            onChange={(e) => {
+              const v = e.target.value as Lang | 'auto'
+              setLangSetting(v)
+              void setLang(v)
+            }}
+          >
+            <option value="auto">{t('lang.auto')}</option>
+            {LANGS.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.native}
+              </option>
+            ))}
+          </select>
         </div>
       </section>
 
       <section className="panel">
-        <h2>2. 数据概览与健康度</h2>
+        <h2>{t('opt.gh.heading')}</h2>
+        <p className="desc">
+          {t('opt.gh.descPre')}
+          <code> Starring: Read </code> {t('opt.gh.descPost')}
+        </p>
+        <input type="password" placeholder="github_pat_…" value={token} onChange={(e) => setToken(e.target.value)} />
+        <div className="row">
+          <button className="btn primary" onClick={saveToken}>
+            {t('opt.gh.saveSync')}
+          </button>
+          {state?.ghLogin && <span className="login">{t('opt.gh.connected', { login: state.ghLogin })}</span>}
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>{t('opt.stats.heading')}</h2>
         {state ? (
           <ul className="stats">
-            <li>Stars：{state.stars} · 书签：{state.bookmarks} · 索引版本：{state.indexVersion}</li>
-            <li>上次同步：{state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleString() : '从未'}</li>
+            <li>
+              {t('opt.stats.summary', {
+                stars: state.stars,
+                bookmarks: state.bookmarks,
+                ver: state.indexVersion,
+              })}
+            </li>
+            <li>
+              {t('opt.lastSync', {
+                time: state.lastSyncAt ? new Date(state.lastSyncAt).toLocaleString() : t('opt.never'),
+              })}
+            </li>
           </ul>
         ) : (
-          <p className="desc">加载中…</p>
+          <p className="desc">{t('opt.loading')}</p>
         )}
 
         {score !== null && (
@@ -182,7 +218,7 @@ export default function App() {
             <div className="metrorow">
               <div className="score" style={{ color: scoreColor }}>
                 {score}
-                <span className="score-label">健康分</span>
+                <span className="score-label">{t('opt.scoreLabel')}</span>
               </div>
               <ul className="factor-list">
                 {(health?.factors ?? []).map((f) => (
@@ -195,7 +231,7 @@ export default function App() {
 
             {health && health.languages.length > 0 && (
               <>
-                <h3 className="sub-title">语言分布</h3>
+                <h3 className="sub-title">{t('opt.langsHeading')}</h3>
                 <div className="bars">
                   {health.languages.slice(0, 8).map((l) => {
                     const max = health.languages[0]!.count
@@ -215,12 +251,12 @@ export default function App() {
 
             {health && health.trend.length > 0 && (
               <>
-                <h3 className="sub-title">近 {health.trend.length} 天新增</h3>
+                <h3 className="sub-title">{t('opt.trendHeading', { n: health.trend.length })}</h3>
                 <div className="trend">
                   {health.trend.map((d) => {
                     const max = Math.max(1, ...health.trend.map((x) => x.added))
                     return (
-                      <div className="trend-col" key={d.day} title={`${d.day}：${d.added} 条`}>
+                      <div className="trend-col" key={d.day} title={t('opt.trendTitle', { day: d.day, n: d.added })}>
                         <div className="trend-bar" style={{ height: `${Math.max(3, Math.round((d.added / max) * 60))}px` }} />
                         <span className="trend-day">{d.day.slice(5)}</span>
                       </div>
@@ -232,11 +268,11 @@ export default function App() {
 
             {health && health.duplicates.length > 0 && (
               <>
-                <h3 className="sub-title">疑似重复（{health.duplicates.length} 组）</h3>
+                <h3 className="sub-title">{t('opt.dupHeading', { n: health.duplicates.length })}</h3>
                 <ul className="dup-list">
                   {health.duplicates.slice(0, 10).map((g) => (
                     <li key={g.title}>
-                      {g.title}（{g.count} 条）
+                      {t('opt.dupEntry', { title: g.title, n: g.count })}
                       <span className="dup-urls">{g.urls.join(' / ')}</span>
                     </li>
                   ))}
@@ -246,7 +282,13 @@ export default function App() {
 
             {health && (
               <ul className="stats extra">
-                <li>唯一域名：{health.uniqueDomains} · 未打标签：{health.untagged} · 已隐藏：{health.hiddenCount}</li>
+                <li>
+                  {t('opt.statsExtra', {
+                    d: health.uniqueDomains,
+                    u: health.untagged,
+                    h: health.hiddenCount,
+                  })}
+                </li>
               </ul>
             )}
           </>
@@ -254,24 +296,24 @@ export default function App() {
 
         <div className="row">
           <button className="btn" onClick={doSync}>
-            立即同步
+            {t('opt.syncNow')}
           </button>
           <button className="btn" onClick={doRebuild}>
-            重建搜索索引
+            {t('opt.rebuildIndex')}
           </button>
           <button className="btn" onClick={refresh}>
-            刷新统计
+            {t('opt.refreshStats')}
           </button>
         </div>
       </section>
 
       <section className="panel">
-        <h2>3. 外观主题</h2>
+        <h2>{t('opt.theme.heading')}</h2>
         <div className="row">
           <select value={theme} onChange={(e) => void changeTheme(e.target.value as ThemePreference)}>
-            <option value="auto">跟随浏览器</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
+            <option value="auto">{t('opt.theme.auto')}</option>
+            <option value="light">{t('opt.theme.light')}</option>
+            <option value="dark">{t('opt.theme.dark')}</option>
           </select>
         </div>
         <div className="row">
@@ -281,29 +323,29 @@ export default function App() {
               checked={letterAvatar}
               onChange={(e) => void updateLetterAvatar(e.target.checked)}
             />
-            显示彩色字母标识（条目前的 favicon 区域）
+            {t('opt.letterAvatar')}
           </label>
         </div>
       </section>
 
       <section className="panel">
-        <h2>4. 自动同步频率</h2>
+        <h2>{t('opt.interval.heading')}</h2>
         <div className="row">
           <select value={intervalHours} onChange={(e) => setIntervalHours(Number(e.target.value))}>
-            <option value={1}>每 1 小时</option>
-            <option value={6}>每 6 小时</option>
-            <option value={12}>每 12 小时</option>
-            <option value={24}>每 24 小时</option>
+            <option value={1}>{t('opt.interval.h', { h: 1 })}</option>
+            <option value={6}>{t('opt.interval.h', { h: 6 })}</option>
+            <option value={12}>{t('opt.interval.h', { h: 12 })}</option>
+            <option value={24}>{t('opt.interval.h', { h: 24 })}</option>
           </select>
           <button className="btn" onClick={saveInterval}>
-            保存
+            {t('opt.save')}
           </button>
         </div>
       </section>
 
       <section className="panel">
-        <h2>5. 侧边栏右键菜单</h2>
-        <p className="desc">在侧边栏条目上右键会弹出 StarMark 自有菜单（替代浏览器默认菜单）。按需选择要开启的功能。</p>
+        <h2>{t('opt.ctxMenu.heading')}</h2>
+        <p className="desc">{t('opt.ctxMenu.desc')}</p>
         <div className="ctx-opts">
           {CTX_MENU_ACTIONS.map((a) => (
             <label className="chk" key={a.key}>
@@ -312,48 +354,55 @@ export default function App() {
                 checked={ctxMenu[a.key]}
                 onChange={(e) => void updateCtx(a.key, e.target.checked)}
               />
-              {a.label}
+              {t(`ctx.${a.key}`)}
             </label>
           ))}
         </div>
       </section>
 
       <section className="panel">
-        <h2>6. 备份与恢复</h2>
-        <p className="desc">导出全部本地条目（可选口令加密，AES-256-GCM）；导入会覆盖当前数据但保留 Token 与设置。</p>
+        <h2>{t('opt.backup.heading')}</h2>
+        <p className="desc">{t('opt.backup.desc')}</p>
         <div className="row">
           <button className="btn" onClick={doExport}>
-            导出备份
+            {t('opt.backup.export')}
           </button>
           <button className="btn" onClick={() => fileRef.current?.click()}>
-            导入备份
+            {t('opt.backup.import')}
           </button>
           <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={onImportFile} />
         </div>
       </section>
 
       <section className="panel">
-        <h2>7. 同步诊断</h2>
+        <h2>{t('opt.diag.heading')}</h2>
         <div className="row">
           <button className="btn" onClick={refresh}>
-            运行自检
+            {t('opt.diag.run')}
           </button>
         </div>
         <ul className="stats diag">
-          <li>状态机阶段：{state?.status ?? '—'}</li>
-          <li>页检查点：{state?.ghSync?.page ?? 0}</li>
-          <li>条件请求：{state?.ghSync?.etag ? '已启用（ETag）' : '未启用'}</li>
-          <li>上次完成：{state?.lastSyncAt ? new Date(state.lastSyncAt).toLocaleString() : '从未'}</li>
-          <li>最近错误：{state?.ghSync?.error ? <span className="err-text">{state.ghSync.error}</span> : '无'}</li>
-          <li>书签全量遍历：{state?.bmSync?.lastFullWalkAt ? new Date(state.bmSync.lastFullWalkAt).toLocaleString() : '尚未执行'}</li>
-          <li>索引版本：{state?.indexVersion ?? 0}</li>
+          <li>{t('opt.diag.phase', { v: state?.status ?? '—' })}</li>
+          <li>{t('opt.diag.page', { v: state?.ghSync?.page ?? 0 })}</li>
+          <li>{t('opt.diag.etag', { v: state?.ghSync?.etag ? t('opt.diag.etagOn') : t('opt.diag.etagOff') })}</li>
+          <li>{t('opt.diag.lastDone', { v: state?.lastSyncAt ? new Date(state.lastSyncAt).toLocaleString() : t('opt.never') })}</li>
+          <li>
+            {t('opt.diag.lastError')}
+            {state?.ghSync?.error ? <span className="err-text">{state.ghSync.error}</span> : t('opt.diag.noError')}
+          </li>
+          <li>
+            {t('opt.diag.bmWalk', {
+              v: state?.bmSync?.lastFullWalkAt ? new Date(state.bmSync.lastFullWalkAt).toLocaleString() : t('opt.diag.bmWalkNever'),
+            })}
+          </li>
+          <li>{t('opt.diag.indexVersion', { v: state?.indexVersion ?? 0 })}</li>
         </ul>
       </section>
 
       <section className="panel danger">
-        <h2>8. 数据管理</h2>
+        <h2>{t('opt.data.heading')}</h2>
         <button className="btn danger-btn" onClick={doClear}>
-          清除全部本地数据
+          {t('opt.data.clearAll')}
         </button>
       </section>
 
@@ -366,7 +415,7 @@ export default function App() {
         </div>
       )}
 
-      <footer className="foot">StarMark MVP · 数据 100% 本地 · {import.meta.env.VITE_ENV || 'v0.1'}</footer>
+      <footer className="foot">{t('opt.foot', { v: import.meta.env.VITE_ENV || 'v0.1' })}</footer>
     </div>
   )
 }

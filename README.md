@@ -16,6 +16,7 @@ StarMark 是一款面向 Chrome/Edge（Manifest V3）的浏览器扩展。它将
 - **本地索引**：MiniSearch 全文索引（前缀 + 模糊匹配 + 字段加权），构建/查询在 Web Worker 中进行，不阻塞 UI
 - **优质中文支持**：按整串 + 单字 + 相邻二元组分词，中文标题子串可命中
 - **收藏夹树**：未搜索时展示书签文件夹树 + 「⭐ 全部 Star 项目」特殊目录
+- **多语言界面**：内置简体中文 / 日本語 / English，侧边栏与设置页全量翻译，设置页可随时切换
 - **自动同步**：GitHub Stars 定时同步（默认 6h），书签变更事件增量同步，全部可恢复、幂等
 - **去重合并**：同一 URL 既被 Star 又被收藏时合并为一行，同时显示两种来源标记
 - **三种外观主题**：跟随系统 / 浅色 / 深色
@@ -60,6 +61,7 @@ npm run build      # 生产构建，产物在 .output/chrome-mv3
 | 查看全部 Star | 侧边栏未输入时展开「⭐ 全部 Star 项目」 |
 | 定时同步 | 设置页调整同步频率（默认 6 小时） |
 | 深色/浅色 | 设置页「外观主题」选择跟随系统 / 浅色 / 深色 |
+| 界面语言 | 设置页语言下拉可切换简体中文 / 日本語 / English（默认跟随浏览器语言） |
 
 ### 创建 GitHub Token
 
@@ -82,12 +84,15 @@ StarMark/
 │  │  ├─ background.ts       # Service Worker：同步作业、书签事件、omnibox、alarms
 │  │  ├─ sidepanel/          # 侧边栏页面（React）+ search-worker.ts（MiniSearch Worker）
 │  │  └─ options/            # 设置页（PAT 配置、同步频率、主题、数据管理）
-│  └─ core/
-│     ├─ api/                # GitHub REST 客户端
-│     ├─ sync/               # Stars 同步状态机 + 书签同步
-│     └─ search/             # MiniSearch 索引配置、Worker 消息协议
+│  ├─ core/
+│  │  ├─ i18n.ts             # 轻量国际化字典（zh-CN / ja / en）与翻译函数
+│  │  ├─ api/                # GitHub REST 客户端
+│  │  ├─ sync/               # Stars 同步状态机 + 书签同步
+│  │  └─ search/             # MiniSearch 索引配置、Worker 消息协议
 ├─ docs/                     # 产品设想、开发技术文档
-├─ public/                   # 图标
+├─ public/
+│  ├─ _locales/              # 扩展清单本地化（名称 / 描述，zh_CN / ja / en）
+│  └─ icons/                 # 图标
 ├─ wxt.config.ts
 └─ package.json
 ```

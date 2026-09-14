@@ -18,6 +18,9 @@ const prefs: UIPrefs = {
   ctxMenu: {},
 }
 
+const tx = (key: string, vars?: Record<string, string | number>): string =>
+  vars ? `${key}:${Object.values(vars).join(',')}` : key
+
 describe('selectors', () => {
   it('按归一化标题找出重复 id（忽略大小写/空格）', () => {
     const ids = collectDupIds([
@@ -38,6 +41,7 @@ describe('selectors', () => {
       '',
       { ...prefs, groupByDomain: true },
       '',
+      tx,
     )
     expect(g).toHaveLength(2)
     expect(g[0]!.label).toBe('github.com')
@@ -54,6 +58,7 @@ describe('selectors', () => {
       '',
       { ...prefs, sort: 'recent' },
       '',
+      tx,
     )
     expect(g).toHaveLength(1)
     expect(g[0]!.items.map((h) => h.id)).toEqual(['b', 'a'])
@@ -68,10 +73,11 @@ describe('selectors', () => {
       'react',
       prefs,
       '',
+      tx,
     )
-    expect(g[0]!.label).toBe('精确匹配')
+    expect(g[0]!.label).toBe('results.exact')
     expect(g[0]!.items.map((h) => h.id)).toEqual(['a'])
-    expect(g[1]!.label).toBe('相关结果')
+    expect(g[1]!.label).toBe('results.related')
   })
 
   it('sortByPref 语义与 worker 对齐', () => {

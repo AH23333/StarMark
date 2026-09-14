@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser'
 import { defineBackground } from 'wxt/utils/define-background'
 import { runGitHubSync } from '~/core/sync/github'
+import { initI18n, t } from '~/core/i18n'
 import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, walkAllBookmarks } from '~/core/sync/bookmarks'
 import { getAppMeta, getSyncState, updateItem } from '~/core/db'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
@@ -103,47 +104,49 @@ export default defineBackground(() => {
   if (isRealServiceWorker) {
     registerBookmarkListeners()
 
-    browser.runtime.onInstalled.addListener(() => {
-      void browser.contextMenus.create({
-        id: 'starmark-collect',
-        title: '收藏到 StarMark',
-        contexts: ['page', 'link'],
+    if (browser.contextMenus) {
+      browser.runtime.onInstalled.addListener(() => {
+        browser.contextMenus?.create({
+          id: 'starmark-collect',
+          title: t('bg.ctx.collect'),
+          contexts: ['page', 'link'],
+        })
       })
-    })
 
-    // 右键「收藏到 StarMark」：放进专用文件夹（bookmarks.onCreated 会自动入库并记入动态）
-    browser.contextMenus.onClicked.addListener((info) => {
-      const targetUrl = (info.linkUrl ?? info.pageUrl) as string | undefined
-      if (info.menuItemId !== 'starmark-collect' || !targetUrl) return
-      void (async () => {
-        try {
-          const tree = (await browser.bookmarks.getTree()) as unknown as {
-            children?: { id: string; title?: string; url?: string; children?: { id: string; title?: string; url?: string }[] }[]
-          }[]
-          const bar = tree[0]?.children?.[0]
-          let folder = bar?.children?.find((n) => n.title === 'StarMark 收藏' && !n.url)
-          if (!folder) {
-            folder = (await browser.bookmarks.create({ parentId: bar?.id, title: 'StarMark 收藏' })) as {
-              id: string
+      // 右键「收藏到 StarMark」：放进专用文件夹（bookmarks.onCreated 会自动入库并记入动态）
+      browser.contextMenus.onClicked.addListener((info) => {
+        const targetUrl = (info.linkUrl ?? info.pageUrl) as string | undefined
+        if (info.menuItemId !== 'starmark-collect' || !targetUrl) return
+        void (async () => {
+          try {
+            const tree = (await browser.bookmarks.getTree()) as unknown as {
+              children?: { id: string; title?: string; url?: string; children?: { id: string; title?: string; url?: string }[] }[]
+            }[]
+            const bar = tree[0]?.children?.[0]
+            let folder = bar?.children?.find((n) => n.title === 'StarMark 收藏' && !n.url)
+            if (!folder) {
+              folder = (await browser.bookmarks.create({ parentId: bar?.id, title: 'StarMark 收藏' })) as {
+                id: string
+              }
             }
+            await browser.bookmarks.create({
+              parentId: folder.id,
+              title: info.selectionText?.slice(0, 80) || targetUrl,
+              url: targetUrl,
+            })
+          } catch (e) {
+            console.warn('[starmark] quick collect failed', e)
           }
-          await browser.bookmarks.create({
-            parentId: folder.id,
-            title: info.selectionText?.slice(0, 80) || targetUrl,
-            url: targetUrl,
-          })
-        } catch (e) {
-          console.warn('[starmark] quick collect failed', e)
-        }
-      })()
-    })
+        })()
+      })
+    }
 
     const sidePanel = (browser as unknown as {
       sidePanel?: { open: (o: { windowId?: number; tabId?: number }) => Promise<void>; setPanelBehavior: (o: { openPanelOnActionClick: boolean }) => Promise<void> }
     }).sidePanel
 
     // 点击工具栏图标直接打开侧边栏（sidePanel.open 需要用户在扩展上的手势，这里即图标点击）
-    browser.action.onClicked.addListener((tab) => {
+    browser.action?.onClicked?.addListener((tab) => {
       void (async () => {
         try {
           if (typeof sidePanel?.open === 'function') {
@@ -157,36 +160,45 @@ export default defineBackground(() => {
       })()
     })
 
-    browser.omnibox.onInputStarted.addListener(() => {
-      void ensureSuggestCache()
-    })
+    if (browser.omnibox) {
+      browser.omnibox.onInputStarted.addListener(() => {
+        void ensureSuggestCache()
+      })
 
-    browser.omnibox.onInputChanged.addListener((text, suggest) => {
-      void (async () => {
-        await ensureSuggestCache()
-        const entries = suggestEntries(text, suggestCache ?? [])
-        suggest(
-          entries.map((e) => ({
-            content: e.url,
-            description: formatOmniboxEntry(e),
-          })),
-        )
-      })()
-    })
+      browser.omnibox.onInputChanged.addListener((text, suggest) => {
+        void (async () => {
+          await ensureSuggestCache()
+          const entries = suggestEntries(text, suggestCache ?? [])
+          suggest(
+            entries.map((e) => ({
+              content: e.url,
+              description: formatOmniboxEntry(e),
+            })),
+          )
+        })()
+      })
 
-    browser.omnibox.onInputEntered.addListener((content, disposition) => {
-      void browser.tabs.create({ url: content, active: disposition === 'currentTab' || disposition === 'newForegroundTab' })
-    })
+      browser.omnibox.onInputEntered.addListener((content, disposition) => {
+        void browser.tabs.create({ url: content, active: disposition === 'currentTab' || disposition === 'newForegroundTab' })
+      })
+    }
   }
 
-  /* ---------- PAT 变更时校验并同步 ---------- */
+  /* ---------- PAT 变更时校验并同步；语言变更时同步右键菜单标题 ---------- */
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes.pat) return
-    if (changes.pat.newValue) {
-      void validateToken()
-        .then((u) => browser.storage.local.set({ ghLogin: u.login }))
-        .catch(() => browser.storage.local.remove('ghLogin'))
-      if (!syncRunning) void runGitHubSync(false)
+    if (area !== 'local') return
+    if (changes.pat) {
+      if (changes.pat.newValue) {
+        void validateToken()
+          .then((u) => browser.storage.local.set({ ghLogin: u.login }))
+          .catch(() => browser.storage.local.remove('ghLogin'))
+        if (!syncRunning) void runGitHubSync(false)
+      }
+    }
+    if (changes.lang) {
+      void initI18n().then(() => {
+        browser.contextMenus.update('starmark-collect', { title: t('bg.ctx.collect') })
+      })
     }
   })
 
@@ -195,7 +207,7 @@ export default defineBackground(() => {
     (msg: BgRequest, _sender, sendResponse: (res: BgResponse) => void) => {
       if (msg.type === 'run-sync') {
         if (syncRunning) {
-          sendResponse({ ok: false, error: '同步进行中' })
+          sendResponse({ ok: false, error: t('bg.err.syncRunning') })
           return false
         }
         syncRunning = true

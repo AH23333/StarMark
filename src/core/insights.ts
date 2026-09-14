@@ -1,5 +1,10 @@
 import type { StarItem } from './types'
 
+export type TFunc = (key: string, vars?: Record<string, string | number>) => string
+
+/** 无词典环境（测试）下的兜底：直接返回 key。 */
+const keyOnly: TFunc = (k) => k
+
 export interface DuplicateGroup {
   title: string
   count: number
@@ -122,7 +127,7 @@ export function trendSeries(items: StarItem[], days = 14): DayCount[] {
 }
 
 /** 综合健康度评分与建议（纯本地统计，不写数据）。 */
-export function buildHealthReport(items: StarItem[], days = 14): HealthReport {
+export function buildHealthReport(items: StarItem[], days = 14, t: TFunc = keyOnly): HealthReport {
   const duplicates = findDuplicates(items)
   const languages = languageDistribution(items)
   const tags = tagHistogram(items)
@@ -134,25 +139,33 @@ export function buildHealthReport(items: StarItem[], days = 14): HealthReport {
   let score = 100
 
   if (total === 0) {
-    factors.push({ label: '数据量', value: '暂无数据', ok: false })
+    factors.push({ label: t('health.emptyLabel'), value: t('health.emptyValue'), ok: false })
     return { score: 0, factors, duplicates, untagged, hiddenCount, uniqueDomains: 0, languages, tags, trend: [] }
   }
 
   const duplicatePenalty = Math.min(40, duplicates.length * 10)
   if (duplicates.length > 0) {
     score -= duplicatePenalty
-    factors.push({ label: '疑似重复', value: `${duplicates.length} 组（扣${duplicatePenalty}分）`, ok: false })
+    factors.push({
+      label: t('health.dup'),
+      value: t('health.dupValue', { n: duplicates.length, p: duplicatePenalty }),
+      ok: false,
+    })
   } else {
-    factors.push({ label: '疑似重复', value: '无', ok: true })
+    factors.push({ label: t('health.dup'), value: t('health.dupNone'), ok: true })
   }
 
   const untaggedRatio = untagged / total
   const untaggedPenalty = Math.min(25, Math.floor(untaggedRatio * 50))
   if (untaggedRatio > 0.2) {
     score -= untaggedPenalty
-    factors.push({ label: '未打标签', value: `${untagged} 条（${Math.round(untaggedRatio * 100)}%，扣${untaggedPenalty}分）`, ok: false })
+    factors.push({
+      label: t('health.untagged'),
+      value: t('health.untaggedValue', { n: untagged, pct: Math.round(untaggedRatio * 100), p: untaggedPenalty }),
+      ok: false,
+    })
   } else {
-    factors.push({ label: '未打标签', value: `${untagged} 条`, ok: true })
+    factors.push({ label: t('health.untagged'), value: t('health.untaggedOk', { n: untagged }), ok: true })
   }
 
   const stale = items.filter((i) => Date.now() - (i.updatedAt || 0) > 180 * 86400_000).length
@@ -160,18 +173,26 @@ export function buildHealthReport(items: StarItem[], days = 14): HealthReport {
   const stalePenalty = Math.min(15, Math.floor(staleRatio * 30))
   if (staleRatio > 0.4) {
     score -= stalePenalty
-    factors.push({ label: '长期未整理', value: `${stale} 条（扣${stalePenalty}分）`, ok: false })
+    factors.push({
+      label: t('health.stale'),
+      value: t('health.staleValue', { n: stale, p: stalePenalty }),
+      ok: false,
+    })
   } else {
-    factors.push({ label: '长期未整理', value: `${stale} 条`, ok: true })
+    factors.push({ label: t('health.stale'), value: t('health.staleOk', { n: stale }), ok: true })
   }
 
   const domains = uniqueDomainCount(items)
   if (domains > 1) {
-    factors.push({ label: '覆盖域名', value: `${domains} 个`, ok: true })
+    factors.push({ label: t('health.domains'), value: t('health.domainsValue', { n: domains }), ok: true })
   }
 
-  const collectedTags = tags.map(([t, c]) => `${t}×${c}`).slice(0, 5).join('、')
-  factors.push({ label: '标签使用', value: collectedTags || '未使用', ok: tags.length > 0 })
+  const collectedTags = tags.slice(0, 5).map(([tag, c]) => t('health.tagsValue', { t: tag, c })).join('、')
+  factors.push({
+    label: t('health.tags'),
+    value: collectedTags || t('health.tagsNone'),
+    ok: tags.length > 0,
+  })
 
   return {
     score: Math.max(0, Math.min(100, score)),

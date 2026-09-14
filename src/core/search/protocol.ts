@@ -2,7 +2,7 @@ import type { ActivityEntry, UIPrefs } from '../types'
 
 /** SearchWorker 与 Side Panel 之间的消息协议 */
 export type WorkerRequest =
-  | { type: 'init' }
+  | { type: 'init'; version?: number }
   | {
     type: 'invalidate'
     /** null/缺省 = 全量重建；[] = 无索引变更；string[] = 仅这些条目的增量替换 */

@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import SearchWorker from './search-worker?worker'
 import { sendToBackground } from '~/core/msg'
 import { initTheme } from '~/core/theme'
+import { t, useT } from '~/core/i18n'
 import { CTX_MENU_ACTIONS, type ActivityEntry, type CtxMenuConfig, type ItemEditPatch, type UIPrefs } from '~/core/types'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
 import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
+import { getIndexVersion } from '~/core/version'
 import type { BgState } from '~/core/msg'
 
 type PanelTab = 'tree' | 'tags' | 'activity' | 'hidden'
@@ -21,15 +23,16 @@ const DEFAULT_PREFS: UIPrefs = {
 }
 
 const SORT_LABELS: Record<UIPrefs['sort'], string> = {
-  relevance: '相关度',
-  recent: '最近收录',
-  starred: '最近 Star',
-  bookmarked: '最近收藏',
-  stars: 'Star 数',
-  name: '名称',
+  relevance: 'sort.relevance',
+  recent: 'sort.recent',
+  starred: 'sort.starred',
+  bookmarked: 'sort.bookmarked',
+  stars: 'sort.stars',
+  name: 'sort.name',
 }
 
 export default function App() {
+  const t = useT()
   const workerRef = useRef<Worker | null>(null)
   const reqIdRef = useRef(0)
 
@@ -71,7 +74,8 @@ export default function App() {
     })
     const worker = new SearchWorker()
     workerRef.current = worker
-    worker.postMessage({ type: 'init' })
+    // worker 上下文没有 chrome/browser 全局，索引版本等由面板侧读取后传入
+    void getIndexVersion().then((version) => worker.postMessage({ type: 'init', version }))
     worker.postMessage({ type: 'tree' })
     worker.postMessage({ type: 'tags' })
     worker.postMessage({ type: 'activity' })
@@ -189,14 +193,14 @@ export default function App() {
   const [browseLanguageFilter, setBrowseLanguageFilter] = useState('')
 
   const groups = useMemo<ResultSection[]>(
-    () => groupHits(hits, query, prefs, languageFilter),
-    [hits, query, prefs, languageFilter],
+    () => groupHits(hits, query, prefs, languageFilter, t),
+    [hits, query, prefs, languageFilter, t],
   )
 
   const doSync = async () => {
     setSyncing(true)
     const res = await sendToBackground({ type: 'run-sync', force: true })
-    setNotify(res.ok ? '同步完成' : `同步失败：${res.error ?? '未知错误'}`)
+    setNotify(res.ok ? t('sync.ok') : t('sync.failed', { err: res.error ?? t('sync.unknownError') }))
     setSyncing(false)
     const st = await sendToBackground({ type: 'get-state' })
     if (st.state) setState(st.state)
@@ -208,7 +212,7 @@ export default function App() {
   const updateItem = useCallback(
     async (id: string, patch: ItemEditPatch) => {
       const res = await sendToBackground({ type: 'update-item', id, patch })
-      if (!res.ok) showNotif(`保存失败：${res.error ?? ''}`)
+      if (!res.ok) showNotif(t('save.failed', { err: res.error ?? '' }))
     },
     [],
   )
@@ -231,15 +235,15 @@ export default function App() {
           <span className={indexReady ? 'dot ok' : 'dot busy'} />
           <span className="status-text">
             {state
-              ? `Star ${state.stars} · 书签 ${state.bookmarks}`
+              ? t('status.starsBookmarks', { stars: state.stars, bookmarks: state.bookmarks })
               : indexReady
-                ? '索引就绪'
-                : '索引构建中…'}
+                ? t('status.indexReady')
+                : t('status.indexBuilding')}
           </span>
           <button className="btn" onClick={doSync} disabled={syncing}>
-            {syncing ? '同步中' : '同步'}
+            {syncing ? t('sync.inProgress') : t('sync.sync')}
           </button>
-          <button className="btn icon-btn" title="设置" onClick={openOptions}>
+          <button className="btn icon-btn" title={t('toolbar.settings')} onClick={openOptions}>
             ⚙
           </button>
         </div>
@@ -255,7 +259,7 @@ export default function App() {
         <input
           autoFocus
           type="search"
-          placeholder="搜索 Star 与书签…（地址栏输入 st 空格 + 关键词可免开本面板）"
+          placeholder={t('search.placeholder')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -266,11 +270,11 @@ export default function App() {
           <select
             value={prefs.sort}
             onChange={(e) => setPrefs((p) => ({ ...p, sort: e.target.value as UIPrefs['sort'] }))}
-            title={searching ? '排序' : '排序（未搜索时按此顺序浏览全部）'}
+            title={searching ? t('sort.title') : t('sort.titleBrowse')}
           >
             {(Object.keys(SORT_LABELS) as UIPrefs['sort'][]).map((k) => (
               <option key={k} value={k}>
-                {k === 'relevance' && !searching ? '最近收录' : SORT_LABELS[k]}
+                {k === 'relevance' && !searching ? t('sort.relevanceBrowse') : t(SORT_LABELS[k])}
               </option>
             ))}
           </select>
@@ -287,9 +291,11 @@ export default function App() {
                     setBrowseLanguageFilter('')
                   }
                 }}
-                title={s === 'all' ? '全部来源' : s === 'star' ? '仅 Star' : '仅书签'}
+                title={
+                  s === 'all' ? t('source.all') : s === 'star' ? t('source.star') : t('source.bookmark')
+                }
               >
-                {s === 'all' ? '全部' : s === 'star' ? '⭐' : '🔖'}
+                {s === 'all' ? t('source.allShort') : s === 'star' ? '⭐' : '🔖'}
               </button>
             ))}
           </div>
@@ -299,9 +305,9 @@ export default function App() {
               onChange={(e) =>
                 searching ? setLanguageFilter(e.target.value) : setBrowseLanguageFilter(e.target.value)
               }
-              title="语言"
+              title={t('lang.label')}
             >
-              <option value="">全部语言</option>
+              <option value="">{t('lang.all')}</option>
               {languages.map((l) => (
                 <option key={l} value={l}>
                   {l}
@@ -312,18 +318,18 @@ export default function App() {
           {searching && (
             <label className="chk">
               <input type="checkbox" checked={prefs.groupByDomain} onChange={(e) => setPrefs((p) => ({ ...p, groupByDomain: e.target.checked }))} />
-              域名分组
+              {t('toolbar.groupByDomain')}
             </label>
           )}
           {searching && (
             <label className="chk">
               <input type="checkbox" checked={prefs.sourceAware} onChange={(e) => setPrefs((p) => ({ ...p, sourceAware: e.target.checked }))} />
-              来源感知
+              {t('toolbar.sourceAware')}
             </label>
           )}
           <label className="chk">
             <input type="checkbox" checked={prefs.showHidden} onChange={(e) => setPrefs((p) => ({ ...p, showHidden: e.target.checked }))} />
-            显示隐藏
+            {t('toolbar.showHidden')}
           </label>
         </div>
       )}
@@ -331,38 +337,38 @@ export default function App() {
       <main className="content">
         {!state?.hasToken && (
           <div className="empty">
-            <div className="empty-title">连接你的 GitHub</div>
-            <p>配置一次 Token，StarMark 即可拉取你的 Stars 并与书签合并搜索。数据仅保存在本地。</p>
+            <div className="empty-title">{t('empty.connectTitle')}</div>
+            <p>{t('empty.connectDesc')}</p>
             <button className="btn primary" onClick={openOptions}>
-              前往设置
+              {t('empty.goSettings')}
             </button>
           </div>
         )}
 
         {state?.hasToken && !indexReady && !searching && (
           <div className="empty">
-            <div className="empty-title">正在构建本地搜索索引…</div>
-            <p>首次使用需要几秒，之后都在后台增量维护。</p>
+            <div className="empty-title">{t('empty.buildingTitle')}</div>
+            <p>{t('empty.buildingDesc')}</p>
           </div>
         )}
 
         {tagFilters.length > 0 && (
           <div className="tag-banner">
-            <span className="suggest-label">标签区域：</span>
-            {tagFilters.map((t) => (
+            <span className="suggest-label">{t('tagBanner.label')}</span>
+            {tagFilters.map((tag) => (
               <button
-                key={t}
+                key={tag}
                 className="tag count-tag"
-                style={{ color: tagColor(t) }}
-                onClick={() => setTagFilters((prev) => prev.filter((x) => x !== t))}
-                title={`移除「${t}」`}
+                style={{ color: tagColor(tag) }}
+                onClick={() => setTagFilters((prev) => prev.filter((x) => x !== tag))}
+                title={t('tagBanner.remove', { tag })}
               >
-                #{t} ✕
+                #{tag} ✕
               </button>
             ))}
-            <span className="tag-banner-hint">同时满足所选标签 · 上方搜索框可继续输入关键词</span>
-            <button className="btn mini" onClick={() => setTagFilters([])} title="清除全部标签限定">
-              清除
+            <span className="tag-banner-hint">{t('tagBanner.hint')}</span>
+            <button className="btn mini" onClick={() => setTagFilters([])} title={t('tagBanner.clearTitle')}>
+              {t('tagBanner.clear')}
             </button>
           </div>
         )}
@@ -371,10 +377,10 @@ export default function App() {
           <div className="tabs">
             {(
               [
-                ['tree', '📁 收藏夹'],
-                ['tags', `🏷 标签${tags.length ? `(${tags.length})` : ''}`],
-                ['activity', '🕒 动态'],
-                ['hidden', `🙈 隐藏${hiddenItems.length ? `(${hiddenItems.length})` : ''}`],
+                ['tree', t('tab.folder')],
+                ['tags', `${t('tab.tags')}${tags.length ? `(${tags.length})` : ''}`],
+                ['activity', t('tab.activity')],
+                ['hidden', `${t('tab.hidden')}${hiddenItems.length ? `(${hiddenItems.length})` : ''}`],
               ] as [PanelTab, string][]
             ).map(([k, label]) => (
               <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
@@ -388,27 +394,27 @@ export default function App() {
           <>
             {tags.length === 0 ? (
               <div className="empty">
-                还没有标签 —— 在条目的 🏷 按钮或右键菜单里添加；新增标签会自动出现在这里，点击后进入该标签的区域浏览与搜索
+                {t('tags.empty')}
               </div>
             ) : (
               <>
-                <div className="tree-hint">点击标签加入过滤（可多选，同时满足），再次点击取消；选好后在收藏夹/搜索中查看</div>
+                <div className="tree-hint">{t('tags.hint')}</div>
                 <div className="tag-cloud">
-                  {tags.map((t) => {
-                    const on = tagFilters.includes(t.name)
+                  {tags.map((tg) => {
+                    const on = tagFilters.includes(tg.name)
                     return (
                       <button
-                        key={t.name}
+                        key={tg.name}
                         className={`tag count-tag${on ? ' on' : ''}`}
-                        style={{ color: tagColor(t.name) }}
+                        style={{ color: tagColor(tg.name) }}
                         onClick={() => {
-                          setTagFilters((prev) => (on ? prev.filter((x) => x !== t.name) : [...prev, t.name]))
+                          setTagFilters((prev) => (on ? prev.filter((x) => x !== tg.name) : [...prev, tg.name]))
                           if (!on && tab !== 'tags') setTab('tree')
                         }}
-                        title={on ? `移除「${t.name}」过滤` : `加入「${t.name}」过滤`}
+                        title={on ? t('tags.removeFilter', { tag: tg.name }) : t('tags.addFilter', { tag: tg.name })}
                       >
-                        #{t.name}
-                        <span className="tag-count">{t.count}</span>
+                        #{tg.name}
+                        <span className="tag-count">{tg.count}</span>
                       </button>
                     )
                   })}
@@ -421,17 +427,15 @@ export default function App() {
         {!searching && indexReady && tab === 'tree' && (
           <>
             {tree === null ? (
-              <div className="empty">正在读取收藏夹…</div>
+              <div className="empty">{t('tree.loading')}</div>
             ) : tree.length === 0 ? (
               <div className="empty">
-                {state?.hasToken
-                  ? '暂无数据 —— 点右上角「同步」拉取你的 Stars，或在浏览器里添加书签后回来'
-                  : '配置 GitHub Token 后即可浏览你的 Star 项目'}
+                {state?.hasToken ? t('tree.emptyWithToken') : t('tree.emptyNoToken')}
               </div>
             ) : (
               <>
                 <div className="tree-hint">
-                  点击节点展开查看内容；右键条目可快速编辑 · {tree.reduce((s, n) => s + n.count, 0)} 条
+                  {t('tree.hint', { count: tree.reduce((s, n) => s + n.count, 0) })}
                 </div>
                 {tree
                   .filter((n) => (prefs.source === 'star' ? n.kind === 'stars' : prefs.source === 'bookmark' ? n.kind !== 'stars' : true))
@@ -457,7 +461,7 @@ export default function App() {
         {!searching && indexReady && tab === 'activity' && (
           <>
             {activity.length === 0 ? (
-              <div className="empty">暂无动态——同步 Stars 或添加书签后，这里会展示最近的新增与移除</div>
+              <div className="empty">{t('activity.empty')}</div>
             ) : (
               <ul className="act-list">
                 {activity.map((a) => (
@@ -471,7 +475,7 @@ export default function App() {
         {!searching && indexReady && tab === 'hidden' && (
           <>
             {hiddenItems.length === 0 ? (
-              <div className="empty">没有隐藏的条目</div>
+              <div className="empty">{t('hidden.empty')}</div>
             ) : (
               hiddenItems.map((h) => (
                 <HiddenCard
@@ -487,13 +491,13 @@ export default function App() {
 
         {searching &&
           (hits.length === 0 ? (
-            <div className="empty">没有匹配「{query.trim()}」的结果</div>
+            <div className="empty">{t('search.noResults', { q: query.trim() })}</div>
           ) : (
             groups.map((g) => (
               <section key={g.label}>
                 <h3 className="group-label">
                   {g.label}
-                  {dupIds.size > 0 && <span className="dup-hint"> ⚠ {dupIds.size} 条疑似重复</span>}
+                  {dupIds.size > 0 && <span className="dup-hint">{t('dup.hint', { count: dupIds.size })}</span>}
                 </h3>
                 {g.items.map((h) => (
                   <ResultCard
@@ -530,12 +534,12 @@ export default function App() {
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts
   const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return `${m} 分钟前`
+  if (m < 1) return t('time.justNow')
+  if (m < 60) return t('time.minutesAgo', { m })
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h} 小时前`
+  if (h < 24) return t('time.hoursAgo', { h })
   const d = Math.floor(h / 24)
-  if (d < 30) return `${d} 天前`
+  if (d < 30) return t('time.daysAgo', { d })
   return new Date(ts).toLocaleDateString()
 }
 
@@ -578,7 +582,7 @@ function HiddenCard({
       <div className="card-url">{hit.url}</div>
       <div className="card-actions">
         <button className="btn" onClick={onRestore}>
-          恢复显示
+          {t('hidden.restore')}
         </button>
       </div>
     </div>
@@ -643,7 +647,7 @@ function BrowseNode({
       <button className="tree-row" onClick={() => setOpen((o) => !o)} title={node.path || node.name}>
         <span className="tree-arrow">{open ? '▾' : '▸'}</span>
         <span className="tree-name">
-          {node.kind === 'stars' ? '⭐' : '📁'} {node.name}
+          {node.kind === 'stars' ? '⭐' : '📁'} {node.kind === 'stars' ? t('tree.allStars') : node.name}
         </span>
         <span className="tree-count">{total}</span>
       </button>
@@ -664,7 +668,7 @@ function BrowseNode({
           ))}
           {shown < visible.length && (
             <button className="load-more" onClick={() => setShown((s) => s + 100)}>
-              展开更多（剩余 {visible.length - shown} 条）
+              {t('loadMore', { n: visible.length - shown })}
             </button>
           )}
           {node.folders.map((f) => (
@@ -759,9 +763,9 @@ function ContextMenu({
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-      notify('已复制')
+      notify(t('ctx.copied'))
     } catch {
-      notify('复制失败')
+      notify(t('ctx.copyFailed'))
     }
     onClose()
   }
@@ -799,14 +803,14 @@ function ContextMenu({
           return (
             <button key={a.key} className="ctx-item" onClick={() => run(a.key)}>
               {icon(a.key)}
-              {a.key === 'hide' ? (hit.hidden ? '恢复显示' : a.label) : a.label}
+              {a.key === 'hide' ? (hit.hidden ? t('hidden.restore') : t(`ctx.${a.key}`)) : t(`ctx.${a.key}`)}
             </button>
           )
         }
         return (
           <button key={a.key} className="ctx-item" onClick={() => startEdit(a.key as 'tags' | 'note')}>
             {icon(a.key)}
-            {a.label}
+            {t(`ctx.${a.key}`)}
           </button>
         )
       })}
@@ -814,7 +818,7 @@ function ContextMenu({
       {editing && (
         <div className="ctx-editor">
           {editing === 'note' ? (
-            <textarea rows={3} value={draft} autoFocus placeholder="收藏理由 / 备注" onChange={(e) => setDraft(e.target.value)} />
+            <textarea rows={3} value={draft} autoFocus placeholder={t('ctx.editorNotePlaceholder')} onChange={(e) => setDraft(e.target.value)} />
           ) : (
             <>
               {(() => {
@@ -823,31 +827,31 @@ function ContextMenu({
                   .map((t) => t.trim())
                   .filter(Boolean)
                 return draftTags.length > 0 ? (
-                  <div className="tag-chip-row">
-                    {draftTags.map((t, i) => (
+<div className="tag-chip-row">
+                    {draftTags.map((tg, i) => (
                       <button
-                        key={`${t}-${i}`}
+                        key={`${tg}-${i}`}
                         className="chip"
-                        style={{ color: tagColor(t) }}
+                        style={{ color: tagColor(tg) }}
                         onClick={() =>
                           setDraft(
                             draftTags
-                              .filter((x) => x !== t)
+                              .filter((x) => x !== tg)
                               .join(', '),
                           )
                         }
-                        title="点击删除该标签"
+                        title={t('ctx.deleteTagTitle')}
                       >
-                        #{t} <span className="chip-x">✕</span>
+                        #{tg} <span className="chip-x">✕</span>
                       </button>
                     ))}
                   </div>
                 ) : null
               })()}
-              <input value={draft} autoFocus placeholder="标签，用逗号或空格分隔" onChange={(e) => setDraft(e.target.value)} />
+              <input value={draft} autoFocus placeholder={t('ctx.editorTagsPlaceholder')} onChange={(e) => setDraft(e.target.value)} />
               {suggestTags && suggestTags.length > 0 && (
                 <div className="suggest-row">
-                  <span className="suggest-label">快捷添加：</span>
+                  <span className="suggest-label">{t('ctx.suggestLabel')}</span>
                   {suggestTags
                     .filter((t) => !(hit.tags ?? []).includes(t) && !draft.split(/[,，\s]+/).map((x) => x.trim()).includes(t))
                     .slice(0, 24)
@@ -867,10 +871,10 @@ function ContextMenu({
           )}
           <div className="row-btns">
             <button className="btn primary" onClick={save}>
-              保存
+              {t('common.save')}
             </button>
             <button className="btn" onClick={() => setEditing(null)}>
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -981,15 +985,15 @@ function ResultCard({
             rows={2}
             value={draft}
             autoFocus
-            placeholder="写下一句话的收藏理由（可选）"
+            placeholder={t('note.placeholder')}
             onChange={(e) => setDraft(e.target.value)}
           />
           <div className="row-btns">
             <button className="btn primary" onClick={save}>
-              保存
+              {t('common.save')}
             </button>
             <button className="btn" onClick={() => setEditing(null)}>
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -1004,30 +1008,30 @@ function ResultCard({
               .filter(Boolean)
             return draftTags.length > 0 ? (
               <div className="tag-chip-row">
-                {draftTags.map((t, i) => (
+                {draftTags.map((tg, i) => (
                   <button
-                    key={`${t}-${i}`}
+                    key={`${tg}-${i}`}
                     className="chip"
-                    style={{ color: tagColor(t) }}
+                    style={{ color: tagColor(tg) }}
                     onClick={() =>
                       setDraft(
                         draftTags
-                          .filter((x) => x !== t)
+                          .filter((x) => x !== tg)
                           .join(', '),
                       )
                     }
-                    title="点击删除该标签"
+                    title={t('ctx.deleteTagTitle')}
                   >
-                    #{t} <span className="chip-x">✕</span>
+                    #{tg} <span className="chip-x">✕</span>
                   </button>
                 ))}
               </div>
             ) : null
           })()}
-          <input value={draft} autoFocus placeholder="标签，用逗号或空格分隔" onChange={(e) => setDraft(e.target.value)} />
+          <input value={draft} autoFocus placeholder={t('ctx.editorTagsPlaceholder')} onChange={(e) => setDraft(e.target.value)} />
           {allTags && allTags.length > 0 && (
             <div className="suggest-row">
-              <span className="suggest-label">快捷添加：</span>
+              <span className="suggest-label">{t('ctx.suggestLabel')}</span>
               {allTags
                 .filter((t) => !(hit.tags ?? []).includes(t) && !draft.split(/[,，\s]+/).map((x) => x.trim()).includes(t))
                 .slice(0, 24)
@@ -1045,38 +1049,38 @@ function ResultCard({
           )}
           <div className="row-btns">
             <button className="btn primary" onClick={save}>
-              保存
+              {t('common.save')}
             </button>
             <button className="btn" onClick={() => setEditing(null)}>
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         </div>
       )}
 
       <div className="card-meta">
-        {hit.sources.includes('star') && <span className="badge star">⭐ GitHub Star</span>}
-        {hit.sources.includes('bookmark') && <span className="badge bm">🔖 书签</span>}
-        {isDup && <span className="badge dup" title="同标题有多条记录，可在设置页查看去重报告">⚠ 疑似重复</span>}
+        {hit.sources.includes('star') && <span className="badge star">{t('badge.star')}</span>}
+        {hit.sources.includes('bookmark') && <span className="badge bm">{t('badge.bookmark')}</span>}
+        {isDup && <span className="badge dup" title={t('badge.dupTitle')}>{t('badge.dup')}</span>}
         {hit.tags && hit.tags.length > 0 && (
           <div className="tag-row">
-            {hit.tags.map((t) => (
-              <button key={t} className="tag" style={{ color: tagColor(t) }} onClick={() => onTagClick(t)} title={`搜索标签「${t}」`}>
-                #{t}
+            {hit.tags.map((tg) => (
+              <button key={tg} className="tag" style={{ color: tagColor(tg) }} onClick={() => onTagClick(tg)} title={t('tag.search', { tag: tg })}>
+                #{tg}
               </button>
             ))}
           </div>
         )}
         <div className="spacer" />
-        <button className="btn mini" title="收藏理由/备注" onClick={() => (editing === 'note' ? save() : startEdit('note'))}>
+        <button className="btn mini" title={t('edit.noteTitle')} onClick={() => (editing === 'note' ? save() : startEdit('note'))}>
           ✏️
         </button>
-        <button className="btn mini" title="标签" onClick={() => (editing === 'tags' ? save() : startEdit('tags'))}>
+        <button className="btn mini" title={t('edit.tagsTitle')} onClick={() => (editing === 'tags' ? save() : startEdit('tags'))}>
           🏷
         </button>
         <button
           className="btn mini"
-          title={hit.hidden ? '恢复显示' : '隐藏（不计入搜索与收藏夹）'}
+          title={hit.hidden ? t('hidden.restore') : t('hide.hide')}
           onClick={() => void onUpdate(hit.id, { hidden: !hit.hidden })}
         >
           {hit.hidden ? '🙈' : '👁'}

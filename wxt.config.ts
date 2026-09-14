@@ -7,7 +7,8 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
     name: 'StarMark',
-    description: '统一搜索 GitHub Stars 与浏览器书签的本地搜索入口',
+    default_locale: 'zh_CN',
+    description: '__MSG_extDesc__',
     permissions: ['bookmarks', 'storage', 'sidePanel', 'alarms', 'contextMenus'],
     omnibox: { keyword: 'st' },
     action: { default_title: 'StarMark' },

@@ -58,6 +58,7 @@ export function groupHits(
   query: string,
   prefs: UIPrefs,
   languageFilter: string,
+  t: (key: string, vars?: Record<string, string | number>) => string,
 ): ResultSection[] {
   let list = hits.filter((h) => !languageFilter || h.language === languageFilter)
   if (list.length === 0) return []
@@ -82,7 +83,7 @@ export function groupHits(
 
   if (prefs.sort !== 'relevance') {
     const sorted = [...list].sort((a, b) => sortByPref(a, b, prefs.sort))
-    return [{ label: `${sorted.length} 条结果`, items: sorted }]
+    return [{ label: t('results.all', { n: sorted.length }), items: sorted }]
   }
 
   const needle = query.trim().toLowerCase()
@@ -100,7 +101,7 @@ export function groupHits(
     }
   }
   const out: ResultSection[] = []
-  if (strong.length) out.push({ label: '精确匹配', items: strong })
-  if (fuzzy.length) out.push({ label: '相关结果', items: fuzzy })
+  if (strong.length) out.push({ label: t('results.exact'), items: strong })
+  if (fuzzy.length) out.push({ label: t('results.related'), items: fuzzy })
   return out
 }

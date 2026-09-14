@@ -1,5 +1,4 @@
 import MiniSearch from 'minisearch'
-import { getIndexVersion } from '~/core/version'
 import { getSearchIndex, allItems, hiddenItems, getAppMeta, saveSearchIndex, db } from '~/core/db'
 import { createMiniSearch, docFromItem, searchOptions } from '~/core/search/indexer'
 import { recentActivity } from '~/core/activity'
@@ -44,7 +43,7 @@ async function applyPatch(ids: string[]): Promise<void> {
   if (!index || ids.length === 0) return
   // id 数量过多时直接全量重建（discard+add 本身带词法分析，性价比不如全量）
   if (ids.length >= (index.documentCount >>> 1)) {
-    await ensureIndex(true)
+    await ensureIndex(true, cachedVersion)
     return
   }
   const items = await db.items.bulkGet(ids)
@@ -57,9 +56,9 @@ async function applyPatch(ids: string[]): Promise<void> {
   schedulePersist()
 }
 
-async function ensureIndex(force = false): Promise<void> {
+async function ensureIndex(force = false, version = 0): Promise<void> {
   if (ready && !force) return
-  const indexVersion = await getIndexVersion()
+  const indexVersion = version
 
   if (!force) {
     const saved = await getSearchIndex()
@@ -262,7 +261,7 @@ async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
 
   const nodes: FolderNode[] = []
   if (starItems.length > 0) {
-    nodes.push({ id: '$stars', name: '全部 Star 项目', path: '$stars', count: starItems.length, folders: [], items: starItems, kind: 'stars' })
+    nodes.push({ id: '$stars', name: 'all-stars', path: '$stars', count: starItems.length, folders: [], items: starItems, kind: 'stars' })
   }
   return nodes.concat(root.folders)
 }
@@ -274,7 +273,7 @@ function readyResponse(rebuilding: boolean): WorkerResponse {
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const req = e.data
   if (req.type === 'init') {
-    void enqueue(() => ensureIndex().finally(() => self.postMessage(readyResponse(true))))
+    void enqueue(() => ensureIndex(false, req.version ?? 0).finally(() => self.postMessage(readyResponse(true))))
     return
   }
   if (req.type === 'invalidate') {
@@ -282,7 +281,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     if (typeof req.version === 'number' && req.version > cachedVersion) cachedVersion = req.version
     void enqueue(async () => {
       try {
-        if (ids === null) await ensureIndex(true)
+        if (ids === null) await ensureIndex(true, cachedVersion)
         else if (ids.length > 0) await applyPatch(ids)
       } finally {
         self.postMessage({ type: 'ready', indexVersion: cachedVersion, docCount, rebuilt: false } satisfies WorkerResponse)

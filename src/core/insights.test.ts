@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { buildHealthReport, findDuplicates, languageDistribution, normalizedTitle, trendSeries } from './insights'
+import { buildHealthReport, findDuplicates, languageDistribution, normalizedTitle, trendSeries, type TFunc } from './insights'
 import type { StarItem } from './types'
+
+const tx: TFunc = (k, vars) => {
+  const zh: Record<string, string> = {
+    'health.dup': '疑似重复',
+    'health.dupValue': '{n} 组（扣{p}分）',
+    'health.dupNone': '无',
+    'health.untagged': '未打标签',
+    'health.untaggedValue': '{n} 条（{pct}%，扣{p}分）',
+    'health.untaggedOk': '{n} 条',
+    'health.stale': '长期未整理',
+    'health.staleOk': '{n} 条',
+    'health.staleValue': '{n} 条（扣{p}分）',
+    'health.domains': '覆盖域名',
+    'health.domainsValue': '{n} 个',
+    'health.tags': '标签使用',
+    'health.tagsNone': '未使用',
+    'health.tagsValue': '{t}×{c}',
+  }
+  let s = zh[k] ?? k
+  if (vars) for (const [kk, v] of Object.entries(vars)) s = s.replace(`{${kk}}`, String(v))
+  return s
+}
 
 function mk(id: string, over: Partial<StarItem> & { language?: string } = {}): StarItem {
   const url = over.url ?? `https://example.com/${id}`
@@ -72,7 +94,7 @@ describe('trendSeries', () => {
 
 describe('buildHealthReport', () => {
   it('空数据得 0 分', () => {
-    const r = buildHealthReport([])
+    const r = buildHealthReport([], 14, tx)
     expect(r.score).toBe(0)
   })
 
@@ -81,14 +103,14 @@ describe('buildHealthReport', () => {
       mk('1', { title: 'Dup', tags: ['x'], createdAt: Date.now() }),
       mk('2', { title: 'dup', tags: ['y'], createdAt: Date.now() - 1000 }),
     ]
-    const r = buildHealthReport(items)
+    const r = buildHealthReport(items, 14, tx)
     expect(r.duplicates).toHaveLength(1)
     expect(r.score).toBeLessThan(100)
     expect(r.factors.some((f) => f.label === '疑似重复' && !f.ok)).toBe(true)
   })
 
   it('统计隐藏与未打标签', () => {
-    const r = buildHealthReport([mk('1', { hidden: true }), mk('2')])
+    const r = buildHealthReport([mk('1', { hidden: true }), mk('2')], 14, tx)
     expect(r.hiddenCount).toBe(1)
     expect(r.untagged).toBe(2)
   })
