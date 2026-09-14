@@ -1,8 +1,8 @@
 import MiniSearch, { type Options as MiniSearchOptions } from 'minisearch'
 import type { SearchDoc, StarItem } from '../types'
 
-const FIELDS = ['title', 'url', 'description', 'owner', 'topics'] as const
-const STORE_FIELDS = ['id', 'url', 'title', 'sources'] as const
+const FIELDS = ['title', 'url', 'description', 'owner', 'topics', 'tags'] as const
+const STORE_FIELDS = ['id', 'url', 'title', 'sources', 'description', 'notes', 'tags', 'language', 'stars', 'starredAt', 'bookmarkedAt', 'createdAt', 'hidden', 'favicon'] as const
 
 /** 构造与重建/反序列化共用的同一组索引选项 */
 export function searchOptions(): MiniSearchOptions<SearchDoc> {
@@ -11,7 +11,7 @@ export function searchOptions(): MiniSearchOptions<SearchDoc> {
     storeFields: [...STORE_FIELDS],
     tokenize: cjkAwareTokenize,
     searchOptions: {
-      boost: { title: 2, owner: 1.5, url: 1.2, topics: 1 },
+      boost: { title: 2, owner: 1.5, url: 1.2, topics: 1, tags: 1.2 },
     },
   }
 }
@@ -54,5 +54,14 @@ export function docFromItem(item: StarItem): SearchDoc {
     owner: item.starMeta?.owner ?? '',
     topics: (item.starMeta?.topics ?? []).join(' '),
     sources: item.sources.join(','),
+    language: item.starMeta?.language ?? '',
+    tags: (item.tags ?? []).join(' '),
+    stars: item.starMeta?.stars ?? 0,
+    starredAt: item.starredAt ?? 0,
+    bookmarkedAt: item.bookmarkedAt ?? 0,
+    createdAt: item.createdAt ?? 0,
+    hidden: Boolean(item.hidden),
+    favicon: item.faviconUrl ?? '',
+    notes: item.notes ?? '',
   }
 }

@@ -2,6 +2,7 @@ import { browser } from 'wxt/browser'
 import { faviconFor, hashId, normalizeUrl } from '../normalize'
 import { getByUrl, getSyncState, setSyncState, stripSourceForUrls, upsertItems } from '../db'
 import { bumpIndexVersion } from '../version'
+import { logActivity } from '../activity'
 import type { BookmarkMeta, BookmarkSyncState, Source, StarItem } from '../types'
 
 export const BM_SYNC_STATE_KEY = 'bm.sync'
@@ -93,7 +94,7 @@ export async function walkAllBookmarks(): Promise<number> {
 
 type BmOp =
   | { kind: 'created'; node: BookmarkTreeNode }
-  | { kind: 'removed'; url?: string }
+  | { kind: 'removed'; url?: string; title?: string }
   | { kind: 'changedOrMoved'; id: string }
 
 let pendingOps: BmOp[] = []
@@ -114,11 +115,13 @@ async function applyOps(ops: BmOp[]): Promise<void> {
   for (const op of ops) {
     if (op.kind === 'created' && op.node.url) {
       await upsertBookmark(bookmarkToItem(op.node, [''], [op.node.parentId ?? '']))
+      void logActivity('bookmark_add', op.node.title || op.node.url, op.node.url)
       updated++
     } else if (op.kind === 'removed') {
       if (op.url) {
         // 移除来源而非整行删除（可能该 URL 也是 Star）
         await stripSourceForUrls([op.url], 'bookmark')
+        void logActivity('bookmark_remove', op.title || op.url, op.url)
         updated++
       }
     } else if (op.kind === 'changedOrMoved') {
@@ -144,7 +147,7 @@ export function registerBookmarkListeners(): void {
     scheduleFlush()
   })
   browser.bookmarks.onRemoved.addListener((_id, removeInfo: { node: BookmarkTreeNode }) => {
-    pendingOps.push({ kind: 'removed', url: removeInfo.node.url })
+    pendingOps.push({ kind: 'removed', url: removeInfo.node.url, title: removeInfo.node.title })
     scheduleFlush()
   })
   browser.bookmarks.onChanged.addListener((id: string) => {

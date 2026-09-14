@@ -2,7 +2,7 @@ import { browser } from 'wxt/browser'
 import { defineBackground } from 'wxt/utils/define-background'
 import { runGitHubSync } from '~/core/sync/github'
 import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, walkAllBookmarks } from '~/core/sync/bookmarks'
-import { countSources, getSyncState } from '~/core/db'
+import { countSources, getSyncState, updateItem } from '~/core/db'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
@@ -103,6 +103,41 @@ export default defineBackground(() => {
   if (isRealServiceWorker) {
     registerBookmarkListeners()
 
+    browser.runtime.onInstalled.addListener(() => {
+      void browser.contextMenus.create({
+        id: 'starmark-collect',
+        title: '收藏到 StarMark',
+        contexts: ['page', 'link'],
+      })
+    })
+
+    // 右键「收藏到 StarMark」：放进专用文件夹（bookmarks.onCreated 会自动入库并记入动态）
+    browser.contextMenus.onClicked.addListener((info) => {
+      const targetUrl = (info.linkUrl ?? info.pageUrl) as string | undefined
+      if (info.menuItemId !== 'starmark-collect' || !targetUrl) return
+      void (async () => {
+        try {
+          const tree = (await browser.bookmarks.getTree()) as unknown as {
+            children?: { id: string; title?: string; url?: string; children?: { id: string; title?: string; url?: string }[] }[]
+          }[]
+          const bar = tree[0]?.children?.[0]
+          let folder = bar?.children?.find((n) => n.title === 'StarMark 收藏' && !n.url)
+          if (!folder) {
+            folder = (await browser.bookmarks.create({ parentId: bar?.id, title: 'StarMark 收藏' })) as {
+              id: string
+            }
+          }
+          await browser.bookmarks.create({
+            parentId: folder.id,
+            title: info.selectionText?.slice(0, 80) || targetUrl,
+            url: targetUrl,
+          })
+        } catch (e) {
+          console.warn('[starmark] quick collect failed', e)
+        }
+      })()
+    })
+
     const sidePanel = (browser as unknown as {
       sidePanel?: { open: (o: { windowId?: number; tabId?: number }) => Promise<void>; setPanelBehavior: (o: { openPanelOnActionClick: boolean }) => Promise<void> }
     }).sidePanel
@@ -191,15 +226,28 @@ export default defineBackground(() => {
           .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
         return true
       }
+      if (msg.type === 'update-item') {
+        void (async () => {
+          try {
+            await updateItem(msg.id, msg.patch)
+            await bumpIndexVersion()
+            sendResponse({ ok: true })
+          } catch (e) {
+            sendResponse({ ok: false, error: (e as Error).message })
+          }
+        })()
+        return true
+      }
       return false
     },
   )
 
   async function getBgState(): Promise<BgState> {
-    const [token, login, ghSync, counts, indexVersion] = await Promise.all([
+    const [token, login, ghSync, bmSync, counts, indexVersion] = await Promise.all([
       getToken(),
       browser.storage.local.get('ghLogin'),
       getSyncState<GitHubSyncState>(GH_SYNC_STATE_KEY),
+      getSyncState<BookmarkSyncState>(BM_SYNC_STATE_KEY),
       countSources(),
       getIndexVersion(),
     ])
@@ -211,6 +259,8 @@ export default defineBackground(() => {
       stars: counts.stars,
       bookmarks: counts.bookmarks,
       indexVersion,
+      ghSync,
+      bmSync,
     }
   }
 })

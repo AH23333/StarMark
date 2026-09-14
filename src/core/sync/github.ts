@@ -3,7 +3,8 @@ import { GitHubApiError, getToken, listStarred, validateToken } from '../api/git
 import { repoToItem } from '../api/mappers'
 import { allItems, getSyncState, setSyncState, stripSourceForUrls, upsertItems } from '../db'
 import { bumpIndexVersion } from '../version'
-import type { GitHubSyncState } from '../types'
+import { logActivity } from '../activity'
+import type { GitHubSyncState, StarItem } from '../types'
 
 export const GH_SYNC_STATE_KEY = 'gh.sync'
 
@@ -68,6 +69,10 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
       let nextPage: number | null = page
       let etag = checkpoint.etag
       let lastModified = checkpoint.lastModified
+      // 已有 Star 集合：识别本轮新增并记入动态
+      const existingStarUrls = new Set(
+        (await allItems()).filter((i) => i.sources.includes('star')).map((i) => i.url),
+      )
 
       while (nextPage !== null) {
         const res = await listStarred(page, { etag, lastModified })
@@ -77,6 +82,10 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
         }
         for (const repo of res.repos) {
           const item = repoToItem(repo)
+          if (!existingStarUrls.has(item.url)) {
+            void logActivity('star_add', item.title, item.url)
+            existingStarUrls.add(item.url)
+          }
           seenUrls.add(item.url)
           totalFetched++
         }
@@ -108,7 +117,7 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
       await setSyncState(GH_SYNC_STATE_KEY, checkpoint)
       await bumpIndexVersion()
       await finish(checkpoint)
-      return { status: 'OK', fetched: totalFetched, removed }
+      return { status: 'OK', fetched: totalFetched, removed: removed.length }
     }
 
     if (checkpoint.phase === 'TAG_INDEX') {
@@ -140,17 +149,15 @@ async function finish(checkpoint: GitHubSyncState): Promise<void> {
 }
 
 /**
- * 对账：移除 items 中 sources 含 'star'、但本次同步集合之外的记录来源。
+ * 对账：移除 items 中 sources 含 'star'、但本次同步集合之外的记录来源，并记入动态。
  * 满足安全：幂等、可重复执行、不影响同 URL 的书签来源。
  */
-export async function reconcileStars(seenUrls: Set<string>): Promise<number> {
+export async function reconcileStars(seenUrls: Set<string>): Promise<StarItem[]> {
   const all = await allItems()
-  const orphanUrls: string[] = []
-  for (const item of all) {
-    if (item.sources.includes('star') && !seenUrls.has(item.url)) {
-      orphanUrls.push(item.url)
-    }
+  const orphans = all.filter((item) => item.sources.includes('star') && !seenUrls.has(item.url))
+  await stripSourceForUrls(orphans.map((i) => i.url), 'star')
+  for (const o of orphans) {
+    void logActivity('star_remove', o.title, o.url)
   }
-  await stripSourceForUrls(orphanUrls, 'star')
-  return orphanUrls.length
+  return orphans
 }

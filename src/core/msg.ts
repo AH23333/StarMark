@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser'
+import type { BookmarkSyncState, GitHubSyncState } from './types'
 
 /** 前端上下文 ↔ Background SW 消息协议 */
 export type BgRequest =
@@ -6,6 +7,7 @@ export type BgRequest =
   | { type: 'walk-bookmarks' }
   | { type: 'get-state' }
   | { type: 'rebuild-index' }
+  | { type: 'update-item'; id: string; patch: { notes?: string; tags?: string[]; hidden?: boolean } }
 
 export interface BgState {
   ghLogin?: string
@@ -15,6 +17,8 @@ export interface BgState {
   stars: number
   bookmarks: number
   indexVersion: number
+  ghSync?: GitHubSyncState
+  bmSync?: BookmarkSyncState
 }
 
 export type BgResponse = { ok: boolean; error?: string; state?: BgState }

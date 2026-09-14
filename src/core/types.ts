@@ -33,11 +33,24 @@ export interface StarItem {
   faviconUrl?: string
   createdAt: number
   updatedAt: number
-  /** AI 扩展预留（Phase 2/3） */
+  /** 敏感条目隐藏（默认从搜索/树中排除，可在「隐藏」页恢复） */
+  hidden?: boolean
+  /** AI 扩展预留（Phase 2/3），同时被基础版标签/笔记/收藏理由使用 */
   notes?: string
   summary?: string
   tags?: string[]
   embedded?: Float32Array | null
+}
+
+/** 动态时间线条目：Star/书签的新增与移除 */
+export type ActivityKind = 'star_add' | 'star_remove' | 'bookmark_add' | 'bookmark_remove'
+
+export interface ActivityEntry {
+  id?: number
+  at: number
+  kind: ActivityKind
+  title: string
+  url: string
 }
 
 export type GitHubSyncPhase = 'VALIDATE' | 'FETCH_PAGES' | 'RECONCILE' | 'TAG_INDEX' | 'DONE'
@@ -70,7 +83,7 @@ export interface SyncStateRow {
   value: GitHubSyncState | BookmarkSyncState | unknown
 }
 
-/** 搜索索引文档形态（MiniSearch 需要扁平字段） */
+/** 搜索索引文档形态（MiniSearch 需要扁平字段；store 字段用于结果卡直接展示） */
 export interface SearchDoc {
   id: string
   title: string
@@ -79,6 +92,15 @@ export interface SearchDoc {
   owner: string
   topics: string
   sources: string
+  language: string
+  tags: string
+  stars: number
+  starredAt: number
+  bookmarkedAt: number
+  createdAt: number
+  hidden: boolean
+  favicon: string
+  notes: string
 }
 
 export interface SuggestEntry {
@@ -86,4 +108,37 @@ export interface SuggestEntry {
   title: string
   url: string
   sources: Source[]
+}
+
+/** 侧边栏右键菜单：可开启/关闭的条目（默认全部开启） */
+export interface CtxMenuConfig {
+  open?: boolean
+  copyUrl?: boolean
+  copyTitle?: boolean
+  tags?: boolean
+  note?: boolean
+  hide?: boolean
+}
+
+/** 右键菜单配置项的定义（设置页展示用） */
+export const CTX_MENU_ACTIONS: { key: keyof CtxMenuConfig; label: string }[] = [
+  { key: 'open', label: '打开链接' },
+  { key: 'copyUrl', label: '复制链接' },
+  { key: 'copyTitle', label: '复制标题' },
+  { key: 'tags', label: '编辑标签' },
+  { key: 'note', label: '编辑备注' },
+  { key: 'hide', label: '隐藏 / 恢复' },
+]
+
+/** 搜索偏好（侧边栏工具栏，持久化到 storage.local） */
+export interface UIPrefs {
+  sort: 'relevance' | 'recent' | 'starred' | 'bookmarked' | 'stars' | 'name'
+  source: 'all' | 'star' | 'bookmark'
+  groupByDomain: boolean
+  sourceAware: boolean
+  showHidden: boolean
+  /** 是否显示彩色字母标识（favicon 区域）。关闭后标题前不留任何图标位，列表更干净 */
+  letterAvatar?: boolean
+  /** 右键菜单开关（缺省项视为开启） */
+  ctxMenu?: CtxMenuConfig
 }

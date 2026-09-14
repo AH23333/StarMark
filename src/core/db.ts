@@ -1,10 +1,11 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { SearchIndexRecord, StarItem, SyncStateRow } from './types'
+import type { ActivityEntry, SearchIndexRecord, StarItem, SyncStateRow } from './types'
 
 export class StarMarkDB extends Dexie {
   items!: EntityTable<StarItem, 'id'>
   searchIndex!: EntityTable<SearchIndexRecord, 'id'>
   syncState!: EntityTable<SyncStateRow, 'key'>
+  activity!: EntityTable<ActivityEntry, 'id'>
 
   constructor() {
     super('starmark')
@@ -12,6 +13,12 @@ export class StarMarkDB extends Dexie {
       items: 'id, &url, starredAt, bookmarkedAt, updatedAt',
       searchIndex: 'id, version, builtAt',
       syncState: 'key',
+    })
+    this.version(2).stores({
+      items: 'id, &url, starredAt, bookmarkedAt, updatedAt, hidden',
+      searchIndex: 'id, version, builtAt',
+      syncState: 'key',
+      activity: '++id, at',
     })
   }
 }
@@ -58,6 +65,27 @@ export async function countSources(): Promise<{ stars: number; bookmarks: number
     if (item.sources.includes('bookmark')) bookmarks++
   }
   return { stars, bookmarks }
+}
+
+/** 局部更新单条（tags/notes/hidden 等），维护 updatedAt。 */
+export async function updateItem(id: string, patch: Partial<Pick<StarItem, 'notes' | 'tags' | 'hidden'>>): Promise<void> {
+  const item = await db.items.get(id)
+  if (!item) throw new Error('条目不存在')
+  await db.items.put({
+    ...item,
+    ...patch,
+    tags: patch.tags !== undefined ? dedupeTags(patch.tags) : item.tags,
+    updatedAt: Date.now(),
+  })
+}
+
+export function dedupeTags(tags: string[]): string[] {
+  const out: string[] = []
+  for (const t of tags) {
+    const v = t.trim()
+    if (v && !out.includes(v)) out.push(v)
+  }
+  return out
 }
 
 /* ---------- searchIndex ---------- */
