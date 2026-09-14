@@ -47,6 +47,7 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
 
   // 该同步运行期内写入的必要信息（不落检查点，SW 被杀后整轮重跑 RECONCILE 亦可安全对齐）
   const seenUrls = new Set<string>()
+  const sessionChangedIds = new Set<string>()
   let totalFetched = 0
 
   try {
@@ -90,7 +91,9 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
           totalFetched++
         }
         if (seenUrls.size > 0) {
-          await upsertItems(res.repos.map(repoToItem))
+          const newItems = res.repos.map(repoToItem)
+          for (const item of newItems) sessionChangedIds.add(item.id)
+          await upsertItems(newItems)
         }
         etag = res.etag ?? etag
         lastModified = res.lastModified ?? lastModified
@@ -113,15 +116,17 @@ export async function runGitHubSync(force = false): Promise<SyncResult> {
     // RECONCILE：删除已被取消 Star 的记录来源
     if (checkpoint.phase === 'RECONCILE') {
       const removed = await reconcileStars(seenUrls)
+      for (const o of removed) sessionChangedIds.add(o.id)
       checkpoint.phase = 'TAG_INDEX'
       await setSyncState(GH_SYNC_STATE_KEY, checkpoint)
-      await bumpIndexVersion()
+      await bumpIndexVersion([...sessionChangedIds])
       await finish(checkpoint)
       return { status: 'OK', fetched: totalFetched, removed: removed.length }
     }
 
     if (checkpoint.phase === 'TAG_INDEX') {
-      await bumpIndexVersion()
+      // 仅恢复进度，无实际数据变更 → 版本号递增但无需重建索引
+      await bumpIndexVersion([])
       await finish(checkpoint)
       return { status: 'OK', fetched: totalFetched }
     }

@@ -1,8 +1,9 @@
 import MiniSearch from 'minisearch'
 import { getIndexVersion } from '~/core/version'
-import { getSearchIndex, allItems, saveSearchIndex } from '~/core/db'
+import { getSearchIndex, allItems, hiddenItems, getAppMeta, saveSearchIndex, db } from '~/core/db'
 import { createMiniSearch, docFromItem, searchOptions } from '~/core/search/indexer'
 import { recentActivity } from '~/core/activity'
+import { compressText, decompressToText, hasDeflate } from '~/core/compress'
 import type { SearchDoc, StarItem, UIPrefs } from '~/core/types'
 import type { FolderNode, WorkerRequest, WorkerResponse, SearchHit } from '~/core/search/protocol'
 
@@ -10,6 +11,51 @@ let index: MiniSearch<SearchDoc> | null = null
 let ready = false
 let cachedVersion = -1
 let docCount = 0
+
+/** 指数更新与搜索串行化队列，保证读写顺序且不出竞争 */
+let chain: Promise<unknown> = Promise.resolve()
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const p = chain.then(fn, fn)
+  chain = p.then(() => undefined, () => undefined)
+  return p
+}
+
+/** 延迟序列化+压缩写盘；对连续多次增量更新仅触发一次持久化 */
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePersist(): void {
+  if (persistTimer != null) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    void persistSnapshot()
+  }, 4000)
+}
+async function persistSnapshot(): Promise<void> {
+  if (!index || !ready) return
+  try {
+    const json = JSON.stringify(index.toJSON())
+    const data = hasDeflate ? ((await compressText(json)) as Blob) : json
+    await saveSearchIndex({ id: 'main', version: cachedVersion, builtAt: Date.now(), data, docCount })
+  } catch {
+    // 写盘失败不阻塞搜索；下次 ensureIndex 仍可通过 DB 完整重建
+  }
+}
+
+async function applyPatch(ids: string[]): Promise<void> {
+  if (!index || ids.length === 0) return
+  // id 数量过多时直接全量重建（discard+add 本身带词法分析，性价比不如全量）
+  if (ids.length >= (index.documentCount >>> 1)) {
+    await ensureIndex(true)
+    return
+  }
+  const items = await db.items.bulkGet(ids)
+  for (let i = 0; i < ids.length; i++) {
+    const item = items[i]
+    index.discard(ids[i]!)
+    if (item) index.add(docFromItem(item))
+  }
+  docCount = index.documentCount
+  schedulePersist()
+}
 
 async function ensureIndex(force = false): Promise<void> {
   if (ready && !force) return
@@ -19,7 +65,8 @@ async function ensureIndex(force = false): Promise<void> {
     const saved = await getSearchIndex()
     if (saved && saved.data && saved.version === indexVersion) {
       try {
-        index = MiniSearch.loadJSON(saved.data, searchOptions())
+        const json = typeof saved.data === 'string' ? saved.data : await decompressToText(saved.data)
+        index = MiniSearch.loadJSON(json, searchOptions())
         docCount = saved.docCount ?? 0
         cachedVersion = indexVersion
         ready = true
@@ -42,13 +89,19 @@ async function ensureIndex(force = false): Promise<void> {
   cachedVersion = indexVersion
   ready = true
 
-  await saveSearchIndex({
-    id: 'main',
-    version: indexVersion,
-    builtAt: Date.now(),
-    data: JSON.stringify(index.toJSON()),
-    docCount,
-  })
+  try {
+    const json = JSON.stringify(index.toJSON())
+    const data = hasDeflate ? ((await compressText(json)) as Blob) : json
+    await saveSearchIndex({
+      id: 'main',
+      version: indexVersion,
+      builtAt: Date.now(),
+      data,
+      docCount,
+    })
+  } catch {
+    // 压缩/落库失败不阻塞后续搜索
+  }
 }
 
 function itemToHit(item: StarItem): SearchHit {
@@ -161,6 +214,18 @@ async function doSearch(
       }
     }
   }
+
+  // MiniSearch 的 storeFields 不含 description/notes（省内存），命中结果按 id 补取
+  if (needle && out.length > 0) {
+    const full = await db.items.bulkGet(out.map((h) => h.id))
+    for (let i = 0; i < out.length; i++) {
+      const row = full[i]
+      if (!row) continue
+      if (row.description) out[i]!.description = row.description
+      if (row.notes) out[i]!.notes = row.notes
+    }
+  }
+
   return { items: out, total: out.length }
 }
 
@@ -209,24 +274,32 @@ function readyResponse(rebuilding: boolean): WorkerResponse {
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const req = e.data
   if (req.type === 'init') {
-    void ensureIndex().finally(() => self.postMessage(readyResponse(true)))
+    void enqueue(() => ensureIndex().finally(() => self.postMessage(readyResponse(true))))
     return
   }
-  if (req.type === 'rebuild') {
-    index = null
-    ready = false
-    void ensureIndex(true).then(() => self.postMessage(readyResponse(false)))
+  if (req.type === 'invalidate') {
+    const ids = req.ids ?? null
+    if (typeof req.version === 'number' && req.version > cachedVersion) cachedVersion = req.version
+    void enqueue(async () => {
+      try {
+        if (ids === null) await ensureIndex(true)
+        else if (ids.length > 0) await applyPatch(ids)
+      } finally {
+        self.postMessage({ type: 'ready', indexVersion: cachedVersion, docCount, rebuilt: false } satisfies WorkerResponse)
+      }
+    })
     return
   }
   if (req.type === 'search') {
-    void doSearch(req.q, req.max ?? (req.q.trim() ? 60 : 500), {
-      source: req.source,
-      includeHidden: req.includeHidden,
-      sort: req.sort,
-      tags: req.tags,
-    }).then(({ items, total }) =>
-      self.postMessage({ type: 'results', q: req.q, items, total } satisfies WorkerResponse),
-    )
+    void enqueue(async () => {
+      const { items, total } = await doSearch(req.q, req.max ?? (req.q.trim() ? 60 : 500), {
+        source: req.source,
+        includeHidden: req.includeHidden,
+        sort: req.sort,
+        tags: req.tags,
+      })
+      self.postMessage({ type: 'results', q: req.q, items, total } satisfies WorkerResponse)
+    })
     return
   }
   if (req.type === 'tree') {
@@ -242,31 +315,22 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     return
   }
   if (req.type === 'tags') {
-    void allItems()
-      .then((items) => {
-        const map = new Map<string, number>()
-        for (const item of items) {
-          if (item.hidden) continue
-          for (const t of item.tags ?? []) {
-            const v = t.trim()
-            if (!v) continue
-            map.set(v, (map.get(v) ?? 0) + 1)
-          }
-        }
-        const tags = [...map.entries()]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
-          .map(([name, count]) => ({ name, count }))
+    void getAppMeta()
+      .then((m) => {
+        const tags = Object.keys(m.tags)
+          .map((name) => ({ name, count: m.tags[name]! }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
         self.postMessage({ type: 'tags-result', tags } satisfies WorkerResponse)
       })
       .catch(() => self.postMessage({ type: 'tags-result', tags: [] } satisfies WorkerResponse))
     return
   }
   if (req.type === 'hidden') {
-    void allItems()
+    void hiddenItems()
       .then((items) =>
         self.postMessage({
           type: 'hidden-result',
-          items: items.filter((i) => i.hidden).map((i) => ({
+          items: items.map((i) => ({
             id: i.id, url: i.url, title: i.title, sources: i.sources, tags: i.tags,
             starredAt: i.starredAt, bookmarkedAt: i.bookmarkedAt, createdAt: i.createdAt,
             hidden: true, favicon: i.faviconUrl,

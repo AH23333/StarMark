@@ -3,15 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import SearchWorker from './search-worker?worker'
 import { sendToBackground } from '~/core/msg'
 import { initTheme } from '~/core/theme'
-import { normalizedTitle } from '~/core/insights'
-import { CTX_MENU_ACTIONS, type ActivityEntry, type CtxMenuConfig, type UIPrefs } from '~/core/types'
+import { CTX_MENU_ACTIONS, type ActivityEntry, type CtxMenuConfig, type ItemEditPatch, type UIPrefs } from '~/core/types'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
+import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
 import type { BgState } from '~/core/msg'
-
-interface ResultSection {
-  label: string
-  items: SearchHit[]
-}
 
 type PanelTab = 'tree' | 'tags' | 'activity' | 'hidden'
 
@@ -113,10 +108,17 @@ export default function App() {
     // index 失效（数据变更）→ 触发 worker 重建、刷新树与计数（无论同步从哪个入口发起）
     const onStorage = (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, area: string) => {
       if (area === 'local' && changes.indexVersion) {
-        setIndexVersion(changes.indexVersion.newValue as number)
+        const newVersion = changes.indexVersion.newValue as number
+        setIndexVersion(newVersion)
         void loadState()
+        const plan = changes.idxPatch?.newValue as { ids?: unknown } | undefined
         const timer = setTimeout(() => {
-          worker.postMessage({ type: 'rebuild' })
+          // 增量更新：有 ids 则只替换这些条目；ids=null 全量重建；ids=[] 仅刷新状态
+          worker.postMessage({
+            type: 'invalidate',
+            ids: Array.isArray(plan?.ids) ? (plan!.ids as string[]) : plan?.ids === null ? null : undefined,
+            version: newVersion,
+          })
           // 树重建必须携带当前标签限定，否则删除标签后浏览视图会短暂/错误地回落到全部条目
           const tf = tagFiltersRef.current
           worker.postMessage({ type: 'tree', tags: tf.length ? [...tf] : undefined })
@@ -177,94 +179,19 @@ export default function App() {
     w.postMessage({ type: 'tree', tags: tagFilters.length ? [...tagFilters] : undefined })
   }, [indexReady, tagFilters])
 
-  const dupIds = useMemo(() => {
-    const byTitle = new Map<string, string[]>()
-    for (const h of hits) {
-      const key = normalizedTitle(h.title)
-      if (!key) continue
-      const arr = byTitle.get(key) ?? []
-      arr.push(h.id)
-      byTitle.set(key, arr)
-    }
-    const ids = new Set<string>()
-    for (const [, arr] of byTitle) if (arr.length > 1) arr.forEach((id) => ids.add(id))
-    return ids
-  }, [hits])
+  const dupIds = useMemo(() => collectDupIds(hits), [hits])
 
-  const languages = useMemo(() => {
-    const s = new Set<string>()
-    for (const h of hits) if (h.language) s.add(h.language)
-    return [...s].sort()
-  }, [hits])
+  const languages = useMemo(() => collectLanguages(hits), [hits])
 
   const tagNames = useMemo(() => tags.map((t) => t.name), [tags])
 
   const [languageFilter, setLanguageFilter] = useState('')
   const [browseLanguageFilter, setBrowseLanguageFilter] = useState('')
 
-  const groups = useMemo<ResultSection[]>(() => {
-    let list = hits.filter((h) => !languageFilter || h.language === languageFilter)
-    if (list.length === 0) return []
-
-    if (prefs.groupByDomain) {
-      const map = new Map<string, SearchHit[]>()
-      for (const h of list) {
-        let host = ''
-        try {
-          host = new URL(h.url).hostname
-        } catch {
-          host = h.url
-        }
-        const arr = map.get(host) ?? []
-        arr.push(h)
-        map.set(host, arr)
-      }
-      return [...map.entries()]
-        .sort((a, b) => b[1].length - a[1].length)
-        .map(([host, items]) => ({ label: host, items }))
-    }
-
-    if (prefs.sort !== 'relevance') {
-      const sorted = [...list]
-      const cmp = (a: SearchHit, b: SearchHit): number => {
-        switch (prefs.sort) {
-          case 'recent':
-            return (b.createdAt ?? 0) - (a.createdAt ?? 0)
-          case 'starred':
-            return (b.starredAt ?? 0) - (a.starredAt ?? 0)
-          case 'bookmarked':
-            return (b.bookmarkedAt ?? 0) - (a.bookmarkedAt ?? 0)
-          case 'stars':
-            return (b.stars ?? 0) - (a.stars ?? 0)
-          case 'name':
-            return a.title.localeCompare(b.title, 'zh')
-          default:
-            return 0
-        }
-      }
-      sorted.sort(cmp)
-      return [{ label: `${sorted.length} 条结果`, items: sorted }]
-    }
-
-    const needle = query.trim().toLowerCase()
-    const strong: SearchHit[] = []
-    const fuzzy: SearchHit[] = []
-    for (const h of list) {
-      const t = h.title.toLowerCase()
-      const startsWithTitle = t.startsWith(needle)
-      const urlHit = h.url.toLowerCase().includes(needle)
-      const isStrong = startsWithTitle || urlHit
-      if (!isStrong && prefs.sourceAware && h.sources.includes('bookmark') && t.includes(needle)) {
-        strong.push(h)
-      } else {
-        ;(isStrong ? strong : fuzzy).push(h)
-      }
-    }
-    const out: ResultSection[] = []
-    if (strong.length) out.push({ label: '精确匹配', items: strong })
-    if (fuzzy.length) out.push({ label: '相关结果', items: fuzzy })
-    return out
-  }, [hits, query, prefs, languageFilter])
+  const groups = useMemo<ResultSection[]>(
+    () => groupHits(hits, query, prefs, languageFilter),
+    [hits, query, prefs, languageFilter],
+  )
 
   const doSync = async () => {
     setSyncing(true)
@@ -279,7 +206,7 @@ export default function App() {
   const openOptions = () => void browser.runtime.openOptionsPage()
 
   const updateItem = useCallback(
-    async (id: string, patch: { notes?: string; tags?: string[]; hidden?: boolean }) => {
+    async (id: string, patch: ItemEditPatch) => {
       const res = await sendToBackground({ type: 'update-item', id, patch })
       if (!res.ok) showNotif(`保存失败：${res.error ?? ''}`)
     },
@@ -352,14 +279,21 @@ export default function App() {
               <button
                 key={s}
                 className={prefs.source === s ? 'on' : ''}
-                onClick={() => setPrefs((p) => ({ ...p, source: s }))}
+                onClick={() => {
+                  setPrefs((p) => ({ ...p, source: s }))
+                  // 书签无语言概念，切换后清掉可能残留的语言过滤，避免结果被莫名筛空
+                  if (s === 'bookmark') {
+                    setLanguageFilter('')
+                    setBrowseLanguageFilter('')
+                  }
+                }}
                 title={s === 'all' ? '全部来源' : s === 'star' ? '仅 Star' : '仅书签'}
               >
                 {s === 'all' ? '全部' : s === 'star' ? '⭐' : '🔖'}
               </button>
             ))}
           </div>
-          {languages.length > 0 && (
+          {prefs.source !== 'bookmark' && languages.length > 0 && (
             <select
               value={searching ? languageFilter : browseLanguageFilter}
               onChange={(e) =>
@@ -688,7 +622,7 @@ function BrowseNode({
   languageFilter: string
   query: string
   dupIds: Set<string>
-  onUpdate: (id: string, patch: { notes?: string; tags?: string[]; hidden?: boolean }) => void
+  onUpdate: (id: string, patch: ItemEditPatch) => void
   onTagClick: (tag: string) => void
   onCtx: (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => void
   allTags?: string[]
@@ -765,7 +699,7 @@ function ContextMenu({
   menu: { x: number; y: number; hit: SearchHit }
   prefs: UIPrefs
   onClose: () => void
-  onUpdate: (id: string, patch: { notes?: string; tags?: string[]; hidden?: boolean }) => void
+  onUpdate: (id: string, patch: ItemEditPatch) => void
   notify: (t: string) => void
   suggestTags?: string[]
 }) {
@@ -988,7 +922,7 @@ function ResultCard({
   hit: SearchHit
   query: string
   isDup: boolean
-  onUpdate: (id: string, patch: { notes?: string; tags?: string[]; hidden?: boolean }) => void
+  onUpdate: (id: string, patch: ItemEditPatch) => void
   onTagClick: (tag: string) => void
   onContextMenu?: (e: ReactMouseEvent<HTMLDivElement>) => void
   showAvatar?: boolean

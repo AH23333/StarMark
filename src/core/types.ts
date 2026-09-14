@@ -1,5 +1,8 @@
 export type Source = 'star' | 'bookmark'
 
+/** 用户可编辑的条目字段（右键菜单/编辑器），贯穿 msg.ts、db、worker、UI 的唯一事实源 */
+export type ItemEditPatch = Partial<Pick<StarItem, 'notes' | 'tags' | 'hidden'>>
+
 /** GitHub 仓库的 Star 元信息 */
 export interface StarMeta {
   fullName: string
@@ -69,12 +72,13 @@ export interface BookmarkSyncState {
   lastFullWalkAt?: number
 }
 
-/** searchIndex 表：序列化 MiniSearch 索引快照 */
+/** searchIndex 表：序列化+压缩的 MiniSearch 索引快照 */
 export interface SearchIndexRecord {
   id: string
   version: number
   builtAt: number
-  data?: string
+  /** 明文 JSON 字符串（旧格式）或 deflate 压缩后的 Blob（新格式） */
+  data?: string | Blob
   docCount?: number
 }
 

@@ -112,15 +112,18 @@ function scheduleFlush(): void {
 
 async function applyOps(ops: BmOp[]): Promise<void> {
   let updated = 0
+  const ids: string[] = []
   for (const op of ops) {
     if (op.kind === 'created' && op.node.url) {
       await upsertBookmark(bookmarkToItem(op.node, [''], [op.node.parentId ?? '']))
+      ids.push(hashId(normalizeUrl(op.node.url)))
       void logActivity('bookmark_add', op.node.title || op.node.url, op.node.url)
       updated++
     } else if (op.kind === 'removed') {
       if (op.url) {
         // 移除来源而非整行删除（可能该 URL 也是 Star）
         await stripSourceForUrls([op.url], 'bookmark')
+        ids.push(hashId(normalizeUrl(op.url)))
         void logActivity('bookmark_remove', op.title || op.url, op.url)
         updated++
       }
@@ -129,6 +132,7 @@ async function applyOps(ops: BmOp[]): Promise<void> {
         const node = (await browser.bookmarks.get(op.id)) as unknown as BookmarkTreeNode | undefined
         if (node?.url) {
           await upsertBookmark(bookmarkToItem(node, [''], [node.parentId ?? '']))
+          ids.push(hashId(normalizeUrl(node.url)))
           updated++
         }
       } catch {
@@ -137,7 +141,7 @@ async function applyOps(ops: BmOp[]): Promise<void> {
     }
   }
   if (updated > 0) {
-    await bumpIndexVersion()
+    await bumpIndexVersion([...new Set(ids)])
   }
 }
 

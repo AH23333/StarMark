@@ -1,8 +1,10 @@
 import MiniSearch, { type Options as MiniSearchOptions } from 'minisearch'
 import type { SearchDoc, StarItem } from '../types'
 
-const FIELDS = ['title', 'url', 'description', 'owner', 'topics', 'tags'] as const
-const STORE_FIELDS = ['id', 'url', 'title', 'sources', 'description', 'notes', 'tags', 'language', 'stars', 'starredAt', 'bookmarkedAt', 'createdAt', 'hidden', 'favicon'] as const
+// 索引字段含 notes：用户写的备注/收藏理由也可被搜索。
+// storeFields 不含 description/notes：由 worker 按 id 从 DB 补取，避免索引里双份大文本。
+const FIELDS = ['title', 'url', 'description', 'owner', 'topics', 'tags', 'notes'] as const
+const STORE_FIELDS = ['id', 'url', 'title', 'sources', 'tags', 'language', 'stars', 'starredAt', 'bookmarkedAt', 'createdAt', 'hidden', 'favicon'] as const
 
 /** 构造与重建/反序列化共用的同一组索引选项 */
 export function searchOptions(): MiniSearchOptions<SearchDoc> {
@@ -11,7 +13,7 @@ export function searchOptions(): MiniSearchOptions<SearchDoc> {
     storeFields: [...STORE_FIELDS],
     tokenize: cjkAwareTokenize,
     searchOptions: {
-      boost: { title: 2, owner: 1.5, url: 1.2, topics: 1, tags: 1.2 },
+      boost: { title: 2, owner: 1.5, url: 1.2, topics: 1, tags: 1.2, notes: 1.1 },
     },
   }
 }

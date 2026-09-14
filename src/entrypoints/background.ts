@@ -2,7 +2,7 @@ import { browser } from 'wxt/browser'
 import { defineBackground } from 'wxt/utils/define-background'
 import { runGitHubSync } from '~/core/sync/github'
 import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, walkAllBookmarks } from '~/core/sync/bookmarks'
-import { countSources, getSyncState, updateItem } from '~/core/db'
+import { getAppMeta, getSyncState, updateItem } from '~/core/db'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
@@ -230,7 +230,7 @@ export default defineBackground(() => {
         void (async () => {
           try {
             await updateItem(msg.id, msg.patch)
-            await bumpIndexVersion()
+            await bumpIndexVersion([msg.id])
             sendResponse({ ok: true })
           } catch (e) {
             sendResponse({ ok: false, error: (e as Error).message })
@@ -243,12 +243,12 @@ export default defineBackground(() => {
   )
 
   async function getBgState(): Promise<BgState> {
-    const [token, login, ghSync, bmSync, counts, indexVersion] = await Promise.all([
+    const [token, login, ghSync, bmSync, meta, indexVersion] = await Promise.all([
       getToken(),
       browser.storage.local.get('ghLogin'),
       getSyncState<GitHubSyncState>(GH_SYNC_STATE_KEY),
       getSyncState<BookmarkSyncState>(BM_SYNC_STATE_KEY),
-      countSources(),
+      getAppMeta(),
       getIndexVersion(),
     ])
     return {
@@ -256,8 +256,10 @@ export default defineBackground(() => {
       ghLogin: (login.ghLogin as string | undefined) ?? undefined,
       lastSyncAt: ghSync?.doneAt,
       status: ghSync?.phase ?? 'IDLE',
-      stars: counts.stars,
-      bookmarks: counts.bookmarks,
+      stars: meta.stars,
+      bookmarks: meta.bookmarks,
+      hidden: meta.hidden,
+      total: meta.total,
       indexVersion,
       ghSync,
       bmSync,

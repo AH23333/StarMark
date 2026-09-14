@@ -4,6 +4,13 @@ import type { ActivityEntry, UIPrefs } from '../types'
 export type WorkerRequest =
   | { type: 'init' }
   | {
+    type: 'invalidate'
+    /** null/缺省 = 全量重建；[] = 无索引变更；string[] = 仅这些条目的增量替换 */
+    ids?: string[] | null
+    /** 触发方已知的新索引版本，用于增量应用后落库快照的版本号（避免 reopen 误判失效） */
+    version?: number
+  }
+  | {
     type: 'search'
     q: string
     max?: number
@@ -13,7 +20,6 @@ export type WorkerRequest =
     /** 限定只在这些标签下搜索/浏览（多选 = 同时满足） */
     tags?: string[]
   }
-  | { type: 'rebuild' }
   | { type: 'tree'; tags?: string[] }
   | { type: 'tags' }
   | { type: 'activity' }
