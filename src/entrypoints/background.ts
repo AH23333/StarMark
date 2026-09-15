@@ -142,22 +142,83 @@ export default defineBackground(() => {
     }
 
     const sidePanel = (browser as unknown as {
-      sidePanel?: { open: (o: { windowId?: number; tabId?: number }) => Promise<void>; setPanelBehavior: (o: { openPanelOnActionClick: boolean }) => Promise<void> }
+      sidePanel?: {
+        open: (o: { windowId?: number; tabId?: number }) => Promise<void>
+        close?: (o: { windowId?: number; tabId?: number }) => Promise<void>
+        setPanelBehavior: (o: { openPanelOnActionClick: boolean }) => Promise<void>
+        onOpened?: { addListener: (c: (info: { windowId: number }) => void) => void }
+        onClosed?: { addListener: (c: (info: { windowId: number }) => void) => void }
+      }
     }).sidePanel
 
-    // 点击工具栏图标直接打开侧边栏（sidePanel.open 需要用户在扩展上的手势，这里即图标点击）
-    browser.action?.onClicked?.addListener((tab) => {
-      void (async () => {
-        try {
-          if (typeof sidePanel?.open === 'function') {
-            await sidePanel.open(tab.windowId != null ? { windowId: tab.windowId } : {})
-          } else {
-            await sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })
-          }
-        } catch (e) {
-          console.warn('[starmark] open side panel failed', e)
+    // 各窗口侧边栏开关状态：以 onOpened/onClosed 事件校准（覆盖图标点击、快捷键、手动关闭等一切途径），
+    // 并写入 storage.session 以便 SW 重启后恢复（浏览器重启时面板本就全部关闭，session 也同时清空）。
+    const SP_OPEN_WINDOWS_KEY = 'sidePanelOpenWindows'
+    let openWindows = new Set<number>()
+
+    function persistOpenWindows(): void {
+      void browser.storage.session.set({ [SP_OPEN_WINDOWS_KEY]: [...openWindows] }).catch(() => undefined)
+    }
+
+    async function loadOpenWindows(): Promise<void> {
+      try {
+        const s = await browser.storage.session.get(SP_OPEN_WINDOWS_KEY)
+        const arr = (s[SP_OPEN_WINDOWS_KEY] as number[] | undefined) ?? []
+        openWindows = new Set(arr)
+      } catch {
+        openWindows = new Set()
+      }
+    }
+
+    sidePanel?.onOpened?.addListener((info) => {
+      openWindows.add(info.windowId)
+      persistOpenWindows()
+    })
+    sidePanel?.onClosed?.addListener((info) => {
+      openWindows.delete(info.windowId)
+      persistOpenWindows()
+    })
+
+    // 切换侧边栏开关：open/close 必须在手势同一事件循环内同步调用，
+    // 因此在同步路径上只读内存状态并直接发起调用；Chrome<141 无 close 时退化为仅打开。
+    const toggleSidePanel = async (windowId?: number): Promise<void> => {
+      try {
+        if (windowId != null && typeof sidePanel?.close === 'function' && openWindows.has(windowId)) {
+          await sidePanel.close({ windowId })
+          openWindows.delete(windowId)
+          persistOpenWindows()
+        } else if (typeof sidePanel?.open === 'function') {
+          const targetWindowId = windowId ?? (await browser.windows.getLastFocused()).id
+          if (targetWindowId == null) return
+          await sidePanel.open({ windowId: targetWindowId })
+          openWindows.add(targetWindowId)
+          persistOpenWindows()
+        } else {
+          await sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })
         }
-      })()
+      } catch (e) {
+        console.warn('[starmark] toggle side panel failed', e)
+      }
+    }
+
+    void loadOpenWindows()
+
+    // 点击工具栏图标：行为已设为 openPanelOnActionClick 由浏览器原生开合；此处兜底旧版浏览器
+    browser.action?.onClicked?.addListener((tab) => {
+      void toggleSidePanel(tab.windowId)
+    })
+
+    // 绑定的浏览器快捷键（Alt+S 等，设置页可改）：按一次打开、再按一次关闭
+    browser.commands?.onCommand?.addListener((command, tab) => {
+      if (command !== 'open-sidepanel') return
+      if (typeof tab?.windowId === 'number') {
+        void toggleSidePanel(tab.windowId)
+        return
+      }
+      // 极少数无活动 tab 的情况（如焦点在浏览器 UI）：兜底取最近聚焦窗口，失败在 toggleSidePanel 内捕获
+      void browser.windows.getLastFocused().then((w) => toggleSidePanel(w.id)).catch(() => {
+        void toggleSidePanel()
+      })
     })
 
     if (browser.omnibox) {

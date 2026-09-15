@@ -4,5 +4,8 @@
   },
   "extDesc": {
     "message": "GitHub のスターとブラウザーのブックマークを一元管理する個人ライブラリ"
+  },
+  "cmdOpenSidepanelDesc": {
+    "message": "StarMark サイドバーを開く"
   }
 }

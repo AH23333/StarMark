@@ -31,6 +31,7 @@ export default function App() {
   const [theme, setTheme] = useState<ThemePreference>('auto')
   const [letterAvatar, setLetterAvatar] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<Required<CtxMenuConfig>>(DEFAULT_CTX)
+  const [shortcuts, setShortcuts] = useState<{ name?: string; description?: string; shortcut?: string }[]>([])
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
 
@@ -97,6 +98,25 @@ export default function App() {
     await browser.storage.local.set({ ui: { ...(s.ui ?? {}), letterAvatar: v } })
     setMsg({ kind: 'ok', text: t('msg.ok.displaySaved') })
   }
+
+  const loadShortcuts = useCallback(() => {
+    void browser.commands
+      .getAll()
+      .then((list) => setShortcuts(list as { name?: string; description?: string; shortcut?: string }[]))
+      .catch(() => setShortcuts([]))
+  }, [])
+
+  // Chrome 的 commands API 不支持程序化修改快捷键（update/reset 仅 Firefox），
+  // 只能引导用户打开 chrome://extensions/shortcuts 手动配置。
+  const openShortcutManager = () => {
+    void browser.tabs
+      .create({ url: 'chrome://extensions/shortcuts' })
+      .catch(() => setMsg({ kind: 'err', text: t('opt.shortcuts.heading') }))
+  }
+
+  useEffect(() => {
+    loadShortcuts()
+  }, [loadShortcuts])
 
   const doSync = async () => {
     setMsg({ kind: 'ok', text: t('msg.sync.progress') })
@@ -357,6 +377,27 @@ export default function App() {
               {t(`ctx.${a.key}`)}
             </label>
           ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>{t('opt.shortcuts.heading')}</h2>
+        <p className="desc">{t('opt.shortcuts.desc')}</p>
+        <ul className="shortcut-list">
+          {shortcuts.map((c) => {
+            const name = c.name ?? ''
+            return (
+              <li key={name}>
+                <span className="shortcut-name">{c.description || name}</span>
+                <span className="shortcut-key">{c.shortcut || t('opt.shortcuts.unset')}</span>
+              </li>
+            )
+          })}
+        </ul>
+        <div className="row">
+          <button className="btn" onClick={openShortcutManager}>
+            {t('opt.shortcuts.openManager')}
+          </button>
         </div>
       </section>
 

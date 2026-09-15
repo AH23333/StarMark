@@ -10,6 +10,12 @@ export default defineConfig({
     default_locale: 'zh_CN',
     description: '__MSG_extDesc__',
     permissions: ['bookmarks', 'storage', 'sidePanel', 'alarms', 'contextMenus'],
+    commands: {
+      'open-sidepanel': {
+        suggested_key: { default: 'Alt+S', mac: 'MacCtrl+Shift+S' },
+        description: '__MSG_cmdOpenSidepanelDesc__',
+      },
+    },
     omnibox: { keyword: 'st' },
     action: { default_title: 'StarMark' },
     minimum_chrome_version: '116',

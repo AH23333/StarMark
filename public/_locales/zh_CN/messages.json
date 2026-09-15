@@ -4,5 +4,8 @@
   },
   "extDesc": {
     "message": "统一管理 GitHub Stars 与浏览器书签的个人收藏库"
+  },
+  "cmdOpenSidepanelDesc": {
+    "message": "打开 StarMark 侧边栏"
   }
 }
