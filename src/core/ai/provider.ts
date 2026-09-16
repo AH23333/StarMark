@@ -138,9 +138,26 @@ export function buildTagPrompt(input: { title: string; description?: string; not
   return lines.join('\n')
 }
 
-/** Ollama 本地模型（默认 http://localhost:11434，无需 API Key）。 */
+/** Ollama 地址规范化：trim、补协议头、校验端口范围；非法输入抛可读错误。 */
+export function normalizeOllamaBase(input: string | undefined): string {
+  const raw = (input ?? '').trim()
+  const withProto = /^https?:\/\//i.test(raw) ? raw : (raw ? 'http://' + raw : 'http://localhost:11434')
+  let url: URL
+  try {
+    url = new URL(withProto)
+  } catch {
+    throw new Error("Ollama 地址格式不正确：" + raw + "（示例：http://localhost:11434）")
+  }
+  const port = url.port === '' ? '80' : url.port
+  const portNum = Number(port)
+  if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+    throw new Error("Ollama 端口不合法：" + url.port + "（应在 1-65535 之间；Ollama 默认 11434，注意别多打或少打数字）")
+  }
+  return withProto.replace(/\/$/, '')
+}
+
 export async function ollamaBaseUrlOf(settings: AiSettings): Promise<string> {
-  return (settings.ollamaBaseUrl?.trim() || 'http://localhost:11434').replace(/\/$/, '')
+  return normalizeOllamaBase(settings.ollamaBaseUrl)
 }
 
 async function chatOllama(settings: AiSettings, prompt: string): Promise<string> {
@@ -157,8 +174,8 @@ async function chatOllama(settings: AiSettings, prompt: string): Promise<string>
   })
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
-    if (res.status === 404) throw new Error('Ollama 端点不存在：请确认服务已启动（ollama serve）且地址正确')
-    throw new Error(`Ollama 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+    if (res.status === 404) throw new Error('Ollama 端点不存在（已尝试 ' + base + '/api/chat）：请确认服务已启动（ollama serve）且地址正确')
+    throw new Error(`Ollama 请求失败 (${base}/api/chat -> ${res.status}) ${detail.slice(0, 160)}`)
   }
   const data = (await res.json()) as { message?: { content?: string } }
   return data.message?.content ?? ''
@@ -168,7 +185,7 @@ async function chatOllama(settings: AiSettings, prompt: string): Promise<string>
 export async function listOllamaModels(settings: AiSettings): Promise<string[]> {
   const base = await ollamaBaseUrlOf(settings)
   const res = await fetch(`${base}/api/tags`)
-  if (!res.ok) throw new Error(`Ollama 连接失败 (${res.status})`)
+  if (!res.ok) throw new Error(`Ollama 连接失败 (${base}/api/tags -> ${res.status})`)
   const data = (await res.json()) as { models?: { name: string }[] }
   return (data.models ?? []).map((m) => m.name)
 }

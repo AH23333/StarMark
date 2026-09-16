@@ -1,6 +1,6 @@
 ﻿import 'fake-indexeddb/auto'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { parseTagsJson, saveAiSettings, getAiSettings, listOllamaModels } from './provider'
+import { parseTagsJson, saveAiSettings, getAiSettings, listOllamaModels, normalizeOllamaBase } from './provider'
 
 const { store } = vi.hoisted(() => ({ store: new Map<string, unknown>() }))
 vi.mock('wxt/browser', () => ({
@@ -55,5 +55,25 @@ describe('Ollama 连接', () => {
   it('ollama 404 给出启动服务提示', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, text: async () => '' })))
     await expect(listOllamaModels({ enabled: true, provider: 'ollama', apiKey: '', model: '' })).rejects.toThrow(/Ollama/)
+  })
+})
+
+
+describe('normalizeOllamaBase（地址规范化与校验）', () => {
+  it('空值回退默认本机端点；无协议自动补 http://', () => {
+    expect(normalizeOllamaBase('')).toBe('http://localhost:11434')
+    expect(normalizeOllamaBase(undefined)).toBe('http://localhost:11434')
+    expect(normalizeOllamaBase('localhost:11434')).toBe('http://localhost:11434')
+    expect(normalizeOllamaBase('  http://192.168.1.5:11434/  ')).toBe('http://192.168.1.5:11434')
+  })
+
+  it('端口越界（如 114134）抛出可读错误', () => {
+    expect(() => normalizeOllamaBase('http://localhost:114134')).toThrow(/114134/)
+    expect(() => normalizeOllamaBase('http://localhost:0')).toThrow(/端口/)
+    expect(() => normalizeOllamaBase('http://localhost:99999')).toThrow(/11434/)
+  })
+
+  it('格式错误抛出示例提示', () => {
+    expect(() => normalizeOllamaBase('http://')).toThrow(/示例/)
   })
 })
