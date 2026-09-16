@@ -3,6 +3,7 @@ import { faviconFor, hashId, normalizeUrl } from '../normalize'
 import { getByUrl, getSyncState, setSyncState, stripSourceForUrls, upsertItems } from '../db'
 import { bumpIndexVersion } from '../version'
 import { logActivity } from '../activity'
+import { applyRulesForUrls } from '../rules'
 import type { BookmarkMeta, BookmarkSyncState, Source, StarItem } from '../types'
 
 export const BM_SYNC_STATE_KEY = 'bm.sync'
@@ -110,14 +111,52 @@ function scheduleFlush(): void {
   }, 1000)
 }
 
+/** 由 parentId 向上回溯书签树，计算真实目录路径（created 事件即时路径，不等全量遍历）。 */
+async function folderPathFor(parentId: string): Promise<{ paths: string[]; ids: string[] }> {
+  const paths: string[] = []
+  const ids: string[] = []
+  let cur: string | undefined = parentId
+  let rootId = ''
+  try {
+    const tree = (await browser.bookmarks.getTree()) as unknown as BookmarkTreeNode[]
+    rootId = tree[0]?.id ?? ''
+  } catch {
+    rootId = ''
+  }
+  let guard = 0
+  while (cur && cur !== rootId && guard++ < 20) {
+    try {
+      const node = (await browser.bookmarks.get(cur)) as unknown as BookmarkTreeNode | undefined
+      if (!node || node.url) break
+      paths.unshift(node.title ?? '')
+      ids.unshift(node.id)
+      cur = node.parentId
+    } catch {
+      break
+    }
+  }
+  if (paths.length === 0) paths.push('')
+  if (ids.length === 0) ids.push(parentId)
+  return { paths, ids }
+}
+
 async function applyOps(ops: BmOp[]): Promise<void> {
   let updated = 0
   const ids: string[] = []
   for (const op of ops) {
     if (op.kind === 'created' && op.node.url) {
-      await upsertBookmark(bookmarkToItem(op.node, [''], [op.node.parentId ?? '']))
+      // 用真实目录路径建行（此前用 [''] 占位会导致条目暂不出现在收藏夹树，需等下一次全量遍历才修复）
+      const { paths, ids: pathIds } = await folderPathFor(op.node.parentId ?? '')
+      await upsertBookmark(bookmarkToItem(op.node, paths, pathIds))
       ids.push(hashId(normalizeUrl(op.node.url)))
       void logActivity('bookmark_add', op.node.title || op.node.url, op.node.url)
+      // 规则自动标签：新增书签立即命中规则（bump:false，合并到本批失效里）
+      try {
+        const ruleIds = await applyRulesForUrls([normalizeUrl(op.node.url)], { bump: false })
+        ids.push(...ruleIds)
+      } catch {
+        // 规则应用失败不阻塞书签同步
+      }
       updated++
     } else if (op.kind === 'removed') {
       if (op.url) {

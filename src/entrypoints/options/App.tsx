@@ -2,6 +2,12 @@ import { browser } from 'wxt/browser'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { clearAll, allItems } from '~/core/db'
 import { buildBackup, parseBackup, restoreBackup } from '~/core/backup'
+import { buildExport, exportFilename, type ExportFormat } from '~/core/export'
+import { getRules, saveRules, newRuleId, type RuleMatchType, type TagRule } from '~/core/rules'
+import { tagColor } from '~/core/tagcolor'
+import { DEFAULT_AI_SETTINGS, getAiSettings, saveAiSettings, type AiSettings, type ProviderKind } from '~/core/ai/provider'
+import type { AiPipelineState } from '~/core/ai/pipeline'
+import type { TagSuggestion } from '~/core/types'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
 import { sendToBackground } from '~/core/msg'
 import { LANGS, getCurrentLangSetting, setLang, useT, type Lang } from '~/core/i18n'
@@ -11,8 +17,8 @@ import type { BgState } from '~/core/msg'
 
 const DEFAULT_CTX: Required<CtxMenuConfig> = { open: true, copyUrl: true, copyTitle: true, tags: true, note: true, hide: true }
 
-function download(content: string, filename: string): void {
-  const blob = new Blob([content], { type: 'application/json' })
+function download(content: string, filename: string, mime = 'application/json'): void {
+  const blob = new Blob([content], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -34,6 +40,107 @@ export default function App() {
   const [shortcuts, setShortcuts] = useState<{ name?: string; description?: string; shortcut?: string }[]>([])
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
+
+  /* ---------- 规则自动标签 ---------- */
+  const [rules, setRules] = useState<TagRule[]>([])
+  const [ruleMatch, setRuleMatch] = useState<RuleMatchType>('domain')
+  const [ruleValue, setRuleValue] = useState('')
+  const [ruleTags, setRuleTags] = useState('')
+  const [applyingRules, setApplyingRules] = useState(false)
+
+  /* ---------- AI 建议标签 ---------- */
+  const [ai, setAi] = useState<AiSettings>({ ...DEFAULT_AI_SETTINGS })
+  const [aiState, setAiState] = useState<AiPipelineState | null>(null)
+  const [aiPending, setAiPending] = useState<TagSuggestion[]>([])
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
+
+  const loadAi = useCallback(async () => {
+    setAi(await getAiSettings())
+    const res = await sendToBackground({ type: 'ai-review' })
+    if (res.ok) {
+      setAiState(res.ai ?? null)
+      setAiPending(res.pending ?? [])
+    }
+  }, [])
+
+  const saveAi = async (next: AiSettings) => {
+    setAi(next)
+    await saveAiSettings(next)
+    setMsg({ kind: 'ok', text: t('opt.ai.saved') })
+  }
+
+  const runAi = async () => {
+    setAiBusy(true)
+    setMsg({ kind: 'ok', text: t('opt.ai.running') })
+    const res = await sendToBackground({ type: 'ai-run' })
+    setAiBusy(false)
+    if (!res.ok) {
+      setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.error ?? '' }) })
+      return
+    }
+    setAiState(res.ai ?? null)
+    const review = await sendToBackground({ type: 'ai-review' })
+    if (review.ok) {
+      setAiState(review.ai ?? null)
+      setAiPending(review.pending ?? [])
+      setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: review.ai?.scanned ?? 0, suggested: review.ai?.suggested ?? 0 }) })
+    }
+  }
+
+  const reviewAi = async (action: 'ai-approve' | 'ai-reject', ids: string[]) => {
+    if (ids.length === 0) return
+    const res = await sendToBackground({ type: action, ids })
+    if (res.ok) {
+      setAiPending(res.pending ?? [])
+      refresh()
+    }
+  }
+
+  const loadRules = useCallback(() => {
+    void getRules().then(setRules)
+  }, [])
+
+  const persistRules = useCallback(async (next: TagRule[]) => {
+    setRules(next)
+    await saveRules(next)
+    setMsg({ kind: 'ok', text: t('opt.rules.saved') })
+  }, [])
+
+  const addRule = async () => {
+    const value = ruleValue.trim()
+    const tags = ruleTags
+      .split(/[,，\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    if (!value || tags.length === 0) {
+      setMsg({ kind: 'err', text: t('opt.rules.invalid') })
+      return
+    }
+    const rule: TagRule = {
+      id: newRuleId(),
+      enabled: true,
+      match: ruleMatch,
+      value,
+      tags,
+      createdAt: Date.now(),
+    }
+    await persistRules([...rules, rule])
+    setRuleValue('')
+    setRuleTags('')
+  }
+
+  const applyRulesNow = async () => {
+    setApplyingRules(true)
+    const res = await sendToBackground({ type: 'apply-rules' })
+    setApplyingRules(false)
+    if (!res.ok) {
+      setMsg({ kind: 'err', text: t('opt.rules.applyFailed', { err: res.error ?? '' }) })
+      return
+    }
+    setMsg({ kind: 'ok', text: t('opt.rules.applied', { changed: res.rules?.changed ?? 0, scanned: res.rules?.scanned ?? 0 }) })
+    refresh()
+  }
 
   const refresh = useCallback(() => {
     void sendToBackground({ type: 'get-state' }).then((res) => {
@@ -57,8 +164,21 @@ export default function App() {
     void getThemePreference().then(setTheme)
     void getCurrentLangSetting().then(setLangSetting)
     void refresh()
+    loadRules()
+    void loadAi()
     return () => disposeTheme()
-  }, [refresh])
+  }, [refresh, loadRules, loadAi])
+
+  // 待审建议的条目标题（批量补齐一次）
+  useEffect(() => {
+    const ids = [...new Set(aiPending.map((p) => p.itemId))]
+    if (ids.length === 0) return
+    void allItems().then((items) => {
+      const map: Record<string, string> = {}
+      for (const it of items) if (ids.includes(it.id)) map[it.id] = it.title
+      setAiTitles(map)
+    })
+  }, [aiPending])
 
   const saveToken = async () => {
     const pat = token.trim()
@@ -139,6 +259,21 @@ export default function App() {
       setMsg({ kind: 'ok', text: encrypted ? t('msg.export.okEncrypted') : t('msg.export.okPlain') })
     } catch (e) {
       setMsg({ kind: 'err', text: t('msg.export.failed', { err: (e as Error).message }) })
+    }
+  }
+
+  const doExportFormat = async (format: ExportFormat) => {
+    try {
+      const items = await allItems()
+      if (items.length === 0) {
+        setMsg({ kind: 'err', text: t('opt.export.failed', { err: t('opt.never') }) })
+        return
+      }
+      const { content, mime } = buildExport(format, items)
+      download(content, exportFilename(format), mime)
+      setMsg({ kind: 'ok', text: t('opt.export.ok', { n: items.length, format }) })
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('opt.export.failed', { err: (e as Error).message }) })
     }
   }
 
@@ -413,6 +548,181 @@ export default function App() {
           </button>
           <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={onImportFile} />
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>{t('opt.export.heading')}</h2>
+        <p className="desc">{t('opt.export.desc')}</p>
+        <div className="row">
+          <button className="btn" onClick={() => void doExportFormat('markdown')}>
+            {t('opt.export.markdown')}
+          </button>
+          <button className="btn" onClick={() => void doExportFormat('html')}>
+            {t('opt.export.html')}
+          </button>
+          <button className="btn" onClick={() => void doExportFormat('csv')}>
+            {t('opt.export.csv')}
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>{t('opt.rules.heading')}</h2>
+        <p className="desc">{t('opt.rules.desc')}</p>
+        <p className="desc warn-text">{t('opt.rules.autoHint')}</p>
+
+        {rules.length === 0 ? (
+          <p className="desc">{t('opt.rules.empty')}</p>
+        ) : (
+          <ul className="rule-list">
+            {rules.map((r) => (
+              <li key={r.id} className={r.enabled ? 'rule-row' : 'rule-row off'}>
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={r.enabled}
+                    onChange={() =>
+                      void persistRules(rules.map((x) => (x.id === r.id ? { ...x, enabled: !x.enabled } : x)))
+                    }
+                  />
+                </label>
+                <span className="rule-badge">{t(`opt.rules.match.${r.match}`)}</span>
+                <code className="rule-value">{r.value}</code>
+                <span className="rule-arrow">→</span>
+                <span className="rule-tags">
+                  {r.tags.map((tg) => (
+                    <button
+                      key={tg}
+                      className="tag"
+                      style={{ color: tagColor(tg) }}
+                      onClick={() => setRuleTags(tg)}
+                      title={t('opt.rules.tagTitle')}
+                    >
+                      #{tg}
+                    </button>
+                  ))}
+                </span>
+                <button
+                  className="btn mini danger-btn"
+                  title={t('opt.rules.deleteTitle')}
+                  onClick={() => void persistRules(rules.filter((x) => x.id !== r.id))}
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="rule-form">
+          <select value={ruleMatch} onChange={(e) => setRuleMatch(e.target.value as RuleMatchType)}>
+            <option value="domain">{t('opt.rules.match.domain')}</option>
+            <option value="url">{t('opt.rules.match.url')}</option>
+            <option value="title">{t('opt.rules.match.title')}</option>
+            <option value="language">{t('opt.rules.match.language')}</option>
+          </select>
+          <input
+            className="rule-input"
+            placeholder={t('opt.rules.valuePh')}
+            value={ruleValue}
+            onChange={(e) => setRuleValue(e.target.value)}
+          />
+          <input
+            className="rule-input"
+            placeholder={t('opt.rules.tagsPh')}
+            value={ruleTags}
+            onChange={(e) => setRuleTags(e.target.value)}
+          />
+          <div className="row">
+            <button className="btn" onClick={() => void addRule()}>
+              {t('opt.rules.add')}
+            </button>
+            <button className="btn primary" disabled={applyingRules} onClick={() => void applyRulesNow()}>
+              {applyingRules ? t('opt.rules.applying') : t('opt.rules.applyNow')}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>{t('opt.ai.heading')}</h2>
+        <p className="desc">{t('opt.ai.desc')}</p>
+        <p className="desc warn-text">{t('opt.ai.privacy')}</p>
+
+        <div className="rule-form">
+          <label className="chk">
+            <input
+              type="checkbox"
+              checked={ai.enabled}
+              onChange={(e) => void saveAi({ ...ai, enabled: e.target.checked })}
+            />
+            {t('opt.ai.enabled')}
+          </label>
+          <select value={ai.provider} onChange={(e) => void saveAi({ ...ai, provider: e.target.value as ProviderKind })}>
+            <option value="openai">OpenAI 兼容</option>
+            <option value="anthropic">Anthropic</option>
+          </select>
+          <input
+            className="rule-input"
+            type="password"
+            placeholder={t('opt.ai.keyPh')}
+            value={ai.apiKey}
+            onChange={(e) => setAi((s) => ({ ...s, apiKey: e.target.value }))}
+            onBlur={() => void saveAi(ai)}
+          />
+          <input
+            className="rule-input"
+            placeholder={t('opt.ai.modelPh')}
+            value={ai.model}
+            onChange={(e) => setAi((s) => ({ ...s, model: e.target.value }))}
+            onBlur={() => void saveAi(ai)}
+          />
+          {ai.provider === 'openai' && (
+            <input
+              className="rule-input"
+              placeholder={t('opt.ai.baseUrlPh')}
+              value={ai.baseUrl ?? ''}
+              onChange={(e) => setAi((s) => ({ ...s, baseUrl: e.target.value }))}
+              onBlur={() => void saveAi(ai)}
+            />
+          )}
+          <div className="row">
+            <button className="btn primary" disabled={!ai.enabled || aiBusy || !ai.apiKey} onClick={() => void runAi()}>
+              {aiBusy ? t('opt.ai.running') : t('opt.ai.run')}
+            </button>
+            {aiState && (
+              <span className="ai-state">
+                {t('opt.ai.state', { scanned: aiState.scanned, suggested: aiState.suggested })}
+                {aiState.error ? ` · ${aiState.error}` : ''}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {aiPending.length > 0 && (
+          <>
+            <h3 className="sub-title">{t('opt.ai.pendingHeading', { n: aiPending.length })}</h3>
+            <div className="row">
+              <button className="btn" onClick={() => void reviewAi('ai-approve', aiPending.map((p) => p.id))}>
+                {t('opt.ai.approveAll')}
+              </button>
+              <button className="btn danger-btn" onClick={() => void reviewAi('ai-reject', aiPending.map((p) => p.id))}>
+                {t('opt.ai.rejectAll')}
+              </button>
+            </div>
+            <ul className="ai-pending">
+              {aiPending.map((p) => (
+                <li key={p.id} className="ai-pending-row">
+                  <span className="ai-pending-title">{aiTitles[p.itemId] ?? p.itemId}</span>
+                  <span className="rule-badge">#{p.tag}</span>
+                  <span className="spacer" />
+                  <button className="btn mini" title={t('opt.ai.approve')} onClick={() => void reviewAi('ai-approve', [p.id])}>✓</button>
+                  <button className="btn mini danger-btn" title={t('opt.ai.reject')} onClick={() => void reviewAi('ai-reject', [p.id])}>✕</button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </section>
 
       <section className="panel">

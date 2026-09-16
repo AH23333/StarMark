@@ -4,6 +4,7 @@ import { repoToItem } from '../api/mappers'
 import { allItems, getSyncState, setSyncState, stripSourceForUrls, upsertItems } from '../db'
 import { bumpIndexVersion } from '../version'
 import { logActivity } from '../activity'
+import { applyRulesToAll } from '../rules'
 import type { GitHubSyncState, StarItem } from '../types'
 
 export const GH_SYNC_STATE_KEY = 'gh.sync'
@@ -151,6 +152,8 @@ async function finish(checkpoint: GitHubSyncState): Promise<void> {
   checkpoint.doneAt = Date.now()
   checkpoint.error = undefined
   await setSyncState(GH_SYNC_STATE_KEY, checkpoint)
+  // 同步成功后自动应用规则标签（追加式、幂等；失败不影响同步结果）
+  void applyRulesToAll().catch(() => undefined)
 }
 
 /**
