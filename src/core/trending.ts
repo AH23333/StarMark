@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser'
 import { getToken } from './api/github'
 
 /**
@@ -107,4 +108,63 @@ async function searchFallback(period: TrendingPeriod, language?: string): Promis
     language: r.language ?? null,
     stars: r.stargazers_count ?? 0,
   }))
+}
+/* ---------- 每日缓存：每个周期每天首次打开抓取一次，之后读本地缓存 ---------- */
+
+export interface TrendingCacheEntry {
+  data: TrendingRepo[]
+  fetchedAt: number
+}
+
+const CACHE_KEY = 'trendingCache'
+
+function cacheKeyOf(period: TrendingPeriod, language?: string): string {
+  return [period, (language ?? '').toLowerCase()].join('|')
+}
+
+/** 是否同一个本地日历日（"每天首次打开"的判定） */
+export function isSameLocalDay(ts: number, now = Date.now()): boolean {
+  return new Date(ts).toDateString() === new Date(now).toDateString()
+}
+
+export async function readTrendingCache(period: TrendingPeriod, language?: string): Promise<TrendingCacheEntry | undefined> {
+  const s = await browser.storage.local.get(CACHE_KEY)
+  const cache = (s[CACHE_KEY] ?? {}) as Record<string, TrendingCacheEntry>
+  return cache[cacheKeyOf(period, language)]
+}
+
+export async function writeTrendingCache(period: TrendingPeriod, language: string | undefined, data: TrendingRepo[]): Promise<void> {
+  const s = await browser.storage.local.get(CACHE_KEY)
+  const cache = (s[CACHE_KEY] ?? {}) as Record<string, TrendingCacheEntry>
+  cache[cacheKeyOf(period, language)] = { data, fetchedAt: Date.now() }
+  await browser.storage.local.set({ [CACHE_KEY]: cache })
+}
+
+export interface TrendingResult {
+  list: TrendingRepo[]
+  fromCache: boolean
+  fetchedAt?: number
+  /** 回退到过期缓存（本次抓取失败） */
+  stale: boolean
+}
+
+export async function fetchTrendingCached(
+  period: TrendingPeriod = 'weekly',
+  language?: string,
+  opts: { force?: boolean; now?: number } = {},
+): Promise<TrendingResult> {
+  const now = opts.now ?? Date.now()
+  const cached = await readTrendingCache(period, language)
+  if (!opts.force && cached && isSameLocalDay(cached.fetchedAt, now)) {
+    return { list: cached.data, fromCache: true, fetchedAt: cached.fetchedAt, stale: false }
+  }
+  try {
+    const list = await fetchTrending(period, language)
+    await writeTrendingCache(period, language, list)
+    return { list, fromCache: false, fetchedAt: now, stale: false }
+  } catch (e) {
+    // 抓取失败：有任何旧缓存就先展示（标注过期），完全没缓存才抛错
+    if (cached) return { list: cached.data, fromCache: true, fetchedAt: cached.fetchedAt, stale: true }
+    throw e
+  }
 }

@@ -10,7 +10,7 @@ import type { BatchAction } from '~/core/db'
 import type { ExportFormat } from '~/core/export'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
 import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
-import { fetchTrending, type TrendingPeriod, type TrendingRepo } from '~/core/trending'
+import { fetchTrendingCached, type TrendingPeriod, type TrendingRepo, type TrendingResult } from '~/core/trending'
 import { parseRepoFromUrl } from '~/core/convert'
 import { getIndexVersion } from '~/core/version'
 import type { BgState } from '~/core/msg'
@@ -58,6 +58,7 @@ export default function App() {
   const [trendingLoading, setTrendingLoading] = useState(false)
   const [trendingError, setTrendingError] = useState('')
   const [starredRepos, setStarredRepos] = useState<Set<string>>(new Set())
+  const [trendingMeta, setTrendingMeta] = useState<{ fromCache: boolean; fetchedAt?: number; stale: boolean }>({ fromCache: false, stale: false })
   const [prefs, setPrefs] = useState<UIPrefs>(DEFAULT_PREFS)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null)
   const lastParamsRef = useRef<{
@@ -161,17 +162,6 @@ export default function App() {
     if (tab === 'activity') w.postMessage({ type: 'activity' })
     if (tab === 'hidden') w.postMessage({ type: 'hidden' })
   }, [tab, indexVersion])
-
-  // 热榜推荐：切到页签或周期变化时拉取；索引变化时刷新已 Star 集合
-  useEffect(() => {
-    if (tab !== 'trending') return
-    setTrendingLoading(true)
-    setTrendingError('')
-    void fetchTrending(trendingPeriod)
-      .then((list) => setTrendingList(list))
-      .catch((e) => setTrendingError((e as Error).message))
-      .finally(() => setTrendingLoading(false))
-  }, [tab, trendingPeriod])
 
   useEffect(() => {
     if (tab !== 'trending' || !indexReady) return
@@ -333,6 +323,26 @@ export default function App() {
   )
 
   const searching = query.trim().length > 0
+
+  const loadTrending = useCallback(
+    (force: boolean) => {
+      setTrendingLoading(true)
+      setTrendingError('')
+      void fetchTrendingCached(trendingPeriod, undefined, { force })
+        .then((res: TrendingResult) => {
+          setTrendingList(res.list)
+          setTrendingMeta({ fromCache: res.fromCache, fetchedAt: res.fetchedAt, stale: res.stale })
+          if (res.stale) showNotif(t('trending.staleNotice'))
+        })
+        .catch((e) => setTrendingError((e as Error).message))
+        .finally(() => setTrendingLoading(false))
+    },
+    [trendingPeriod],
+  )
+  useEffect(() => {
+    if (tab !== 'trending') return
+    loadTrending(false)
+  }, [tab, trendingPeriod, loadTrending])
 
   const starTrending = useCallback(
     async (repo: TrendingRepo) => {
@@ -675,19 +685,6 @@ export default function App() {
           </>
         )}
 
-        {!searching && indexReady && tab === 'trending' && (
-          <TrendingView
-            list={trendingList}
-            loading={trendingLoading}
-            error={trendingError}
-            period={trendingPeriod}
-            starred={starredRepos}
-            onPeriod={(p) => setTrendingPeriod(p)}
-            onStar={(r) => void starTrending(r)}
-            onBookmark={(r) => void bookmarkTrending(r)}
-            onRefresh={() => setTrendingPeriod((p) => p)}
-          />
-        )}
 
         {!searching && indexReady && tab === 'hidden' && (
           <>
@@ -737,6 +734,21 @@ export default function App() {
             ))
           ))}
 
+        {!searching && indexReady && tab === 'trending' && (
+          <TrendingView
+            list={trendingList}
+            loading={trendingLoading}
+            error={trendingError}
+            period={trendingPeriod}
+            starred={starredRepos}
+            meta={trendingMeta}
+            onPeriod={(p) => setTrendingPeriod(p)}
+            onStar={(r) => void starTrending(r)}
+            onBookmark={(r) => void bookmarkTrending(r)}
+            onRefresh={() => loadTrending(true)}
+          />
+        )}
+
         {ctxMenu && (
           <ContextMenu
             menu={ctxMenu}
@@ -771,6 +783,7 @@ function TrendingView({
   error,
   period,
   starred,
+  meta,
   onPeriod,
   onStar,
   onBookmark,
@@ -781,6 +794,7 @@ function TrendingView({
   error: string
   period: TrendingPeriod
   starred: Set<string>
+  meta: { fromCache: boolean; fetchedAt?: number; stale: boolean }
   onPeriod: (p: TrendingPeriod) => void
   onStar: (r: TrendingRepo) => void
   onBookmark: (r: TrendingRepo) => void
@@ -805,6 +819,13 @@ function TrendingView({
           ↻ {t('trending.refresh')}
         </button>
       </div>
+      {meta.fetchedAt != null && (
+        <div className={'trending-cache' + (meta.stale ? ' stale' : '')}>
+          {meta.fromCache
+            ? t('trending.cachedAt', { time: new Date(meta.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
+            : t('trending.freshAt', { time: new Date(meta.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })}
+        </div>
+      )}
 
       {loading && <div className="empty">{t('trending.loading')}</div>}
       {!loading && error && <div className="empty">{t('trending.error', { err: error })}</div>}
