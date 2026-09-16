@@ -42,8 +42,11 @@ export async function buildBackup(passphrase?: string): Promise<{ content: strin
   const json = JSON.stringify(payload)
   if (!passphrase) return { content: json, encrypted: false }
 
-  const salt: Uint8Array<ArrayBuffer> = new Uint8Array(16)
-  const iv: Uint8Array<ArrayBuffer> = new Uint8Array(12)
+  // salt 与 iv 必须每次随机生成：
+  // 恒为零会导致同一口令下每次导出派生出相同密钥、且 IV 重复，
+  // 直接破坏 AES-GCM 的 IV 唯一性前提（同一密钥 + 重复 IV 可用于恢复明文异或）。
+  const salt: Uint8Array<ArrayBuffer> = crypto.getRandomValues(new Uint8Array(16))
+  const iv: Uint8Array<ArrayBuffer> = crypto.getRandomValues(new Uint8Array(12))
   const key = await deriveKey(passphrase, salt)
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(json)))
   const envelope = JSON.stringify({
