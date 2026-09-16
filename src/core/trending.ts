@@ -45,14 +45,20 @@ export function parseTrendingHtml(html: string): TrendingRepo[] {
     if (!link) continue
     const fullName = link[1]!.replace(/\/$/, '')
     if (/(stargazers|forks|watchers)$/.test(fullName)) continue
-    const descM = chunk.match(/<p[^>]*>([\s\S]*?)<\/p>/)
+    // 真实页面结构：描述在 <p class="col-9">；其余 <p>（如内置 Star 按钮区）不是描述
+    const descM = chunk.match(/<p[^>]*col-9[^>]*>([\s\S]*?)<\/p>/) ?? chunk.match(/<p[^>]*>([\s\S]*?)<\/p>/)
     const langM = chunk.match(/itemprop="programmingLanguage">\s*([^<]+?)\s*</)
     const starM = chunk.match(/stargazers"[\s\S]*?([\d,]+)\s*<\/a>/)
     const periodM = chunk.match(/([\d,]+)\s+stars?\s+(?:today|this week|this month)/)
     out.push({
       fullName,
       url: "https://github.com/" + fullName,
-      description: descM ? decodeEntities(stripTags(descM[1]!)).trim() : "",
+      description: descM
+        ? decodeEntities(stripTags(descM[1]!))
+            .replace(/\bStar\b/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+        : "",
       language: langM ? langM[1]!.trim() : null,
       stars: starM ? Number(starM[1]!.replace(/,/g, "")) : 0,
       starsToday: periodM ? Number(periodM[1]!.replace(/,/g, "")) : undefined,

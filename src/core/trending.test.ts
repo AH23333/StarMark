@@ -1,6 +1,7 @@
 ﻿import { describe, expect, it } from 'vitest'
 import { parseTrendingHtml } from './trending'
 
+// 按真实 github.com/trending 页面结构取样（col-9 描述段 + Star 按钮区干扰元素）
 const html = `
 <html><body>
 <article class="Box-row">
@@ -12,18 +13,23 @@ const html = `
 </article>
 <article class="Box-row">
   <h2><a href="/ollama/ollama">ollama/ollama</a></h2>
-  <p>Get up and running with large language models.</p>
+  <p class="col-9">Get up and running with large language models.</p>
   <span itemprop="programmingLanguage">Go</span>
   <a href="/ollama/ollama/stargazers">98,765</a>
   <span>1,200 stars this week</span>
+</article>
+<article class="Box-row">
+  <h2><a href="/foo/bar">foo/bar</a></h2>
+  <p>Star</p>
+  <span>1,000 stars today</span>
 </article>
 </body></html>
 `
 
 describe('parseTrendingHtml', () => {
-  it('解析仓库名/描述/语言/星数/今日新增', () => {
+  it('解析仓库名/描述(col-9)/语言/星数/今日新增', () => {
     const list = parseTrendingHtml(html)
-    expect(list.length).toBe(2)
+    expect(list.length).toBe(3)
     expect(list[0]).toMatchObject({
       fullName: 'vercel/next.js',
       url: 'https://github.com/vercel/next.js',
@@ -38,6 +44,11 @@ describe('parseTrendingHtml', () => {
       stars: 98765,
       starsToday: 1200,
     })
+  })
+
+  it('无 col-9 时退化为普通段落并清理 Star 污染', () => {
+    const list = parseTrendingHtml(html)
+    expect(list[2]!.description).toBe('')
   })
 
   it('空页面返回空数组', () => {
