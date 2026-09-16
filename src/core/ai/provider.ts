@@ -72,13 +72,18 @@ export function parseTagsJson(raw: string): string[] {
   }
 }
 
-async function chat(settings: AiSettings, prompt: string): Promise<string> {
+async function chat(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
   if (settings.provider === 'anthropic') return chatAnthropic(settings, prompt)
-  if (settings.provider === 'ollama') return chatOllama(settings, prompt)
-  return chatOpenAiCompatible(settings, prompt)
+  if (settings.provider === 'ollama') return chatOllama(settings, prompt, jsonMode)
+  return chatOpenAiCompatible(settings, prompt, jsonMode)
 }
 
-async function chatOpenAiCompatible(settings: AiSettings, prompt: string): Promise<string> {
+/** 强制 JSON 输出的对话（批量分类用；Ollama 走 format:json，OpenAI 走 response_format）。 */
+export async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
+  return chat(settings, prompt, true)
+}
+
+async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
   const base = (settings.baseUrl?.trim() || 'https://api.openai.com/v1').replace(/\/$/, '')
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -90,7 +95,8 @@ async function chatOpenAiCompatible(settings: AiSettings, prompt: string): Promi
       model: settings.model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.2,
-      max_tokens: 200,
+      max_tokens: 4000,
+      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
     }),
   })
   if (!res.ok) {
@@ -160,7 +166,7 @@ export async function ollamaBaseUrlOf(settings: AiSettings): Promise<string> {
   return normalizeOllamaBase(settings.ollamaBaseUrl)
 }
 
-async function chatOllama(settings: AiSettings, prompt: string): Promise<string> {
+async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
   const base = await ollamaBaseUrlOf(settings)
   const res = await fetch(`${base}/api/chat`, {
     method: 'POST',
@@ -169,7 +175,8 @@ async function chatOllama(settings: AiSettings, prompt: string): Promise<string>
       model: settings.model || 'llama3.2',
       messages: [{ role: 'user', content: prompt }],
       stream: false,
-      options: { temperature: 0.2 },
+      format: jsonMode ? 'json' : undefined,
+      options: { temperature: 0.2, num_ctx: 8192 },
     }),
   })
   if (!res.ok) {

@@ -3,6 +3,7 @@ import type { BookmarkSyncState, GitHubSyncState, ItemEditPatch, TagSuggestion }
 import type { BatchAction, BatchResult } from './db'
 import type { ApplyRulesResult } from './rules'
 import type { AiPipelineState } from './ai/pipeline'
+import type { ClassifyResult, ClassifyState } from './ai/classify'
 
 /** 前端上下文 ↔ Background SW 消息协议 */
 export type BgRequest =
@@ -17,6 +18,11 @@ export type BgRequest =
   | { type: 'ai-review' }
   | { type: 'ai-approve'; ids: string[] }
   | { type: 'ai-reject'; ids: string[] }
+  | { type: 'ai-classify-run' }
+  | { type: 'ai-classify-state' }
+  | { type: 'ai-classify-apply'; groupTags?: string[] | null }
+  | { type: 'ai-classify-export' }
+  | { type: 'ai-classify-import'; json: string }
 
 export interface BgState {
   ghLogin?: string
@@ -40,6 +46,10 @@ export interface BgResponse {
   rules?: ApplyRulesResult
   ai?: AiPipelineState
   pending?: TagSuggestion[]
+  classifyState?: ClassifyState
+  classifyResult?: ClassifyResult
+  classifyApply?: { items: number; tags: number }
+  classifyExport?: string
 }
 
 export async function sendToBackground(req: BgRequest): Promise<BgResponse> {

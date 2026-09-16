@@ -6,6 +6,14 @@ import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, wa
 import { getAppMeta, getSyncState, updateItem, applyBatch } from '~/core/db'
 import { applyRulesToAll } from '~/core/rules'
 import { runAiSuggestPipeline, getAiPipelineState, pendingSuggestions, approveSuggestions, rejectSuggestions } from '~/core/ai/pipeline'
+import {
+  runClassify,
+  getClassifyState,
+  getClassifyResult,
+  applyClassifications,
+  exportClassifications,
+  importClassifications,
+} from '~/core/ai/classify'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
@@ -321,6 +329,38 @@ export default defineBackground(() => {
           const pending = await pendingSuggestions()
           sendResponse({ ok: true, pending })
         })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-classify-run') {
+        void runClassify()
+          .then((st) => sendResponse({ ok: true, classifyState: st }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-classify-state') {
+        void (async () => {
+          const state = await getClassifyState()
+          const result = await getClassifyResult()
+          sendResponse({ ok: true, classifyState: state, classifyResult: result })
+        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-classify-apply') {
+        void applyClassifications(msg.groupTags ?? null)
+          .then((r) => sendResponse({ ok: true, classifyApply: r }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-classify-export') {
+        void exportClassifications()
+          .then((content) => sendResponse({ ok: true, classifyExport: content }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-classify-import') {
+        void importClassifications(msg.json)
+          .then((r) => sendResponse({ ok: true, classifyResult: r }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
         return true
       }
       if (msg.type === 'get-state') {

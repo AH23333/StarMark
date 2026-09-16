@@ -7,6 +7,7 @@ import { getRules, saveRules, newRuleId, type RuleMatchType, type TagRule } from
 import { tagColor } from '~/core/tagcolor'
 import { DEFAULT_AI_SETTINGS, getAiSettings, saveAiSettings, listOllamaModels, type AiSettings, type ProviderKind } from '~/core/ai/provider'
 import type { AiPipelineState } from '~/core/ai/pipeline'
+import type { ClassifyResult, ClassifyState } from '~/core/ai/classify'
 import type { TagSuggestion } from '~/core/types'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
 import { sendToBackground } from '~/core/msg'
@@ -54,6 +55,11 @@ export default function App() {
   const [aiPending, setAiPending] = useState<TagSuggestion[]>([])
   const [aiBusy, setAiBusy] = useState(false)
   const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
+  const [classifyState, setClassifyState] = useState<ClassifyState | null>(null)
+  const [classifyResult, setClassifyResult] = useState<ClassifyResult | null>(null)
+  const [classifyBusy, setClassifyBusy] = useState(false)
+  const fileRef2 = useRef<HTMLInputElement | null>(null)
+  const [classifyTitles, setClassifyTitles] = useState<Record<string, string>>({})
 
   const loadAi = useCallback(async () => {
     setAi(await getAiSettings())
@@ -61,6 +67,11 @@ export default function App() {
     if (res.ok) {
       setAiState(res.ai ?? null)
       setAiPending(res.pending ?? [])
+    }
+    const cs = await sendToBackground({ type: 'ai-classify-state' })
+    if (cs.ok) {
+      setClassifyState(cs.classifyState ?? null)
+      setClassifyResult(cs.classifyResult ?? null)
     }
   }, [])
 
@@ -97,6 +108,68 @@ export default function App() {
       setAiState(review.ai ?? null)
       setAiPending(review.pending ?? [])
       setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: review.ai?.scanned ?? 0, suggested: review.ai?.suggested ?? 0 }) })
+    }
+  }
+
+  const runClassifyNow = async () => {
+    setClassifyBusy(true)
+    setMsg({ kind: 'ok', text: t('opt.ai.clsRunning') })
+    const res = await sendToBackground({ type: 'ai-classify-run' })
+    setClassifyBusy(false)
+    if (!res.ok) {
+      setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.error ?? '' }) })
+      return
+    }
+    setClassifyState(res.classifyState ?? null)
+    const st = await sendToBackground({ type: 'ai-classify-state' })
+    if (st.ok) {
+      setClassifyState(st.classifyState ?? null)
+      setClassifyResult(st.classifyResult ?? null)
+    }
+    if (res.classifyState?.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
+    else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState?.batch ?? 0 }) })
+  }
+
+  const applyGroups = async (tags: string[] | null) => {
+    setClassifyBusy(true)
+    const res = await sendToBackground({ type: 'ai-classify-apply', groupTags: tags })
+    setClassifyBusy(false)
+    if (!res.ok) {
+      setMsg({ kind: 'err', text: t('opt.ai.clsApplyFailed', { err: res.error ?? '' }) })
+      return
+    }
+    setMsg({ kind: 'ok', text: t('opt.ai.clsApplied', { items: res.classifyApply?.items ?? 0, tags: res.classifyApply?.tags ?? 0 }) })
+    refresh()
+  }
+
+  const exportClassify = async () => {
+    const res = await sendToBackground({ type: 'ai-classify-export' })
+    if (!res.ok || !res.classifyExport) {
+      setMsg({ kind: 'err', text: t('opt.ai.clsExportFailed', { err: res.error ?? '' }) })
+      return
+    }
+    const blob = new Blob([res.classifyExport], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'starmark-ai-classification.json'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
+    setMsg({ kind: 'ok', text: t('opt.ai.clsExportOk') })
+  }
+
+  const importClassify = async (file: File) => {
+    try {
+      const json = await file.text()
+      const res = await sendToBackground({ type: 'ai-classify-import', json })
+      if (!res.ok) {
+        setMsg({ kind: 'err', text: t('opt.ai.clsImportFailed', { err: res.error ?? '' }) })
+        return
+      }
+      setClassifyResult(res.classifyResult ?? null)
+      setMsg({ kind: 'ok', text: t('opt.ai.clsImportOk') })
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('opt.ai.clsImportFailed', { err: (e as Error).message }) })
     }
   }
 
@@ -184,13 +257,16 @@ export default function App() {
   // 待审建议的条目标题（批量补齐一次）
   useEffect(() => {
     const ids = [...new Set(aiPending.map((p) => p.itemId))]
-    if (ids.length === 0) return
+    const clsIds = classifyResult ? Object.keys(classifyResult.assignments) : []
+    if (ids.length === 0 && clsIds.length === 0) return
     void allItems().then((items) => {
       const map: Record<string, string> = {}
-      for (const it of items) if (ids.includes(it.id)) map[it.id] = it.title
+      for (const it of items) map[it.id] = it.title || it.url
       setAiTitles(map)
+      setClassifyTitles(map)
     })
-  }, [aiPending])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiPending, classifyResult])
 
   const saveToken = async () => {
     const pat = token.trim()
