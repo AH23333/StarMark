@@ -3,7 +3,9 @@ import { defineBackground } from 'wxt/utils/define-background'
 import { runGitHubSync } from '~/core/sync/github'
 import { initI18n, t } from '~/core/i18n'
 import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, walkAllBookmarks } from '~/core/sync/bookmarks'
-import { getAppMeta, getSyncState, updateItem } from '~/core/db'
+import { getAppMeta, getSyncState, updateItem, applyBatch } from '~/core/db'
+import { applyRulesToAll } from '~/core/rules'
+import { runAiSuggestPipeline, getAiPipelineState, pendingSuggestions, approveSuggestions, rejectSuggestions } from '~/core/ai/pipeline'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
@@ -292,6 +294,35 @@ export default defineBackground(() => {
           .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
         return true
       }
+      if (msg.type === 'apply-rules') {
+        void applyRulesToAll()
+          .then((r) => sendResponse({ ok: true, rules: r }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-run') {
+        void runAiSuggestPipeline()
+          .then((ai) => sendResponse({ ok: true, ai }))
+          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-review') {
+        void (async () => {
+          const ai = await getAiPipelineState()
+          const pending = await pendingSuggestions()
+          sendResponse({ ok: true, ai, pending })
+        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
+      if (msg.type === 'ai-approve' || msg.type === 'ai-reject') {
+        void (async () => {
+          if (msg.type === 'ai-approve') await approveSuggestions(msg.ids)
+          else await rejectSuggestions(msg.ids)
+          const pending = await pendingSuggestions()
+          sendResponse({ ok: true, pending })
+        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+        return true
+      }
       if (msg.type === 'get-state') {
         void ensureBookmarkWalk()
         void getBgState()
@@ -305,6 +336,19 @@ export default defineBackground(() => {
             await updateItem(msg.id, msg.patch)
             await bumpIndexVersion([msg.id])
             sendResponse({ ok: true })
+          } catch (e) {
+            sendResponse({ ok: false, error: (e as Error).message })
+          }
+        })()
+        return true
+      }
+      if (msg.type === 'batch') {
+        void (async () => {
+          try {
+            const result = await applyBatch(msg.action, { deleteBookmarks: msg.deleteBookmarks })
+            // 全量清空索引不必要：worker 的增量补丁已容错处理“索引中不存在的 id”（含删除场景）
+            await bumpIndexVersion([...new Set(msg.action.ids)])
+            sendResponse({ ok: true, batch: result })
           } catch (e) {
             sendResponse({ ok: false, error: (e as Error).message })
           }

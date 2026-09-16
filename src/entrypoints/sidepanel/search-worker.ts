@@ -49,7 +49,12 @@ async function applyPatch(ids: string[]): Promise<void> {
   const items = await db.items.bulkGet(ids)
   for (let i = 0; i < ids.length; i++) {
     const item = items[i]
-    index.discard(ids[i]!)
+    // discard 对不在索引中的 id 会抛错（批量删除后索引里可能已无此文档），必须容错
+    try {
+      index.discard(ids[i]!)
+    } catch {
+      // 文档不存在则跳过
+    }
     if (item) index.add(docFromItem(item))
   }
   docCount = index.documentCount

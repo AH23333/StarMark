@@ -840,3 +840,241 @@ body {
   box-sizing: border-box;
   resize: vertical;
 }
+
+/* ---------- 批量操作（阶段 B） ---------- */
+
+.batch-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.batch-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-right: 4px;
+}
+
+.batch-input {
+  flex: 1;
+  min-width: 140px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.batch-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.batch-suggest .tag {
+  font-size: 11px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
+.batch-suggest .tag:hover {
+  border-color: currentColor;
+}
+
+.btn.mini.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn.mini.danger {
+  color: var(--err, #f7768e);
+}
+
+.btn.mini.danger:hover {
+  border-color: var(--err, #f7768e);
+}
+
+.card-check {
+  accent-color: var(--accent);
+  margin: 0 2px 0 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* ---------- 导出下拉 ---------- */
+
+.export-dd {
+  position: relative;
+  display: inline-block;
+}
+
+.export-dd summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.export-dd summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.export-menu button {
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.export-menu button:hover {
+  background: var(--accent);
+  color: #101018;
+}
+
+/* ---------- 回顾模式（阶段 B） ---------- */
+
+.review-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.review-streak {
+  color: var(--accent2);
+}
+
+.review-card {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 14px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.review-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.review-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  padding: 8px 0 2px;
+}
+
+.review-reveal {
+  align-self: flex-start;
+}
+
+.review-desc {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.review-note {
+  font-size: 12px;
+  color: var(--accent2);
+  line-height: 1.6;
+}
+
+.review-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.review-actions .btn {
+  flex: 1;
+}
+
+.review-ok {
+  border-color: var(--ok);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.review-ok:hover {
+  background: var(--ok);
+  color: #101018;
+}
+
+.review-forgot {
+  border-color: var(--busy);
+  color: var(--busy);
+}
+
+.review-forgot:hover {
+  background: var(--busy);
+  color: #101018;
+}
+
+.review-never {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.review-never:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}

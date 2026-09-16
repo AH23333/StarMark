@@ -1,5 +1,8 @@
 import { browser } from 'wxt/browser'
-import type { BookmarkSyncState, GitHubSyncState, ItemEditPatch } from './types'
+import type { BookmarkSyncState, GitHubSyncState, ItemEditPatch, TagSuggestion } from './types'
+import type { BatchAction, BatchResult } from './db'
+import type { ApplyRulesResult } from './rules'
+import type { AiPipelineState } from './ai/pipeline'
 
 /** 前端上下文 ↔ Background SW 消息协议 */
 export type BgRequest =
@@ -8,6 +11,12 @@ export type BgRequest =
   | { type: 'get-state' }
   | { type: 'rebuild-index' }
   | { type: 'update-item'; id: string; patch: ItemEditPatch }
+  | { type: 'batch'; action: BatchAction; deleteBookmarks?: boolean }
+  | { type: 'apply-rules' }
+  | { type: 'ai-run' }
+  | { type: 'ai-review' }
+  | { type: 'ai-approve'; ids: string[] }
+  | { type: 'ai-reject'; ids: string[] }
 
 export interface BgState {
   ghLogin?: string
@@ -23,7 +32,15 @@ export interface BgState {
   bmSync?: BookmarkSyncState
 }
 
-export type BgResponse = { ok: boolean; error?: string; state?: BgState }
+export interface BgResponse {
+  ok: boolean
+  error?: string
+  state?: BgState
+  batch?: BatchResult
+  rules?: ApplyRulesResult
+  ai?: AiPipelineState
+  pending?: TagSuggestion[]
+}
 
 export async function sendToBackground(req: BgRequest): Promise<BgResponse> {
   try {

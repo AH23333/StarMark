@@ -1,5 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { ActivityEntry, ItemEditPatch, SearchIndexRecord, Source, StarItem, SyncStateRow } from './types'
+import { browser } from 'wxt/browser'
+import { normalizeUrl } from './normalize'
+import type { ActivityEntry, ItemEditPatch, SearchIndexRecord, Source, StarItem, SyncStateRow, TagSuggestion } from './types'
 
 export class StarMarkDB extends Dexie {
   items!: EntityTable<StarItem, 'id'>
@@ -7,6 +9,7 @@ export class StarMarkDB extends Dexie {
   syncState!: EntityTable<SyncStateRow, 'key'>
   activity!: EntityTable<ActivityEntry, 'id'>
   meta!: EntityTable<{ key: string; value: unknown }, 'key'>
+  suggestions!: EntityTable<TagSuggestion, 'id'>
 
   constructor() {
     super('starmark')
@@ -27,6 +30,15 @@ export class StarMarkDB extends Dexie {
       syncState: 'key',
       activity: '++id, at',
       meta: 'key',
+    })
+    // v4（阶段 B）：AI 建议桶 —— AI 产出的标签先暂存，用户批准后才并入 items.tags
+    this.version(4).stores({
+      items: 'id, &url, starredAt, bookmarkedAt, updatedAt, hidden',
+      searchIndex: 'id, version, builtAt',
+      syncState: 'key',
+      activity: '++id, at',
+      meta: 'key',
+      suggestions: 'id, itemId, status, tag',
     })
   }
 }
@@ -103,6 +115,28 @@ function applyItemDelta(m: AppMeta, old: StarItem | undefined, next: StarItem | 
   for (const t of next.tags ?? []) m.tags[t] = (m.tags[t] ?? 0) + 1
 }
 
+/* ---------- 浏览器书签删除辅助（批量 delete 用） ---------- */
+
+interface BmNode {
+  id: string
+  title?: string
+  url?: string
+  children?: BmNode[]
+}
+
+/** 在书签树里查找与规范化 URL 匹配的节点 id（可能多个）。 */
+function collectBookmarkIdsByUrls(tree: BmNode[], urlSet: Set<string>): { id: string; url: string }[] {
+  const found: { id: string; url: string }[] = []
+  const walk = (nodes: BmNode[]): void => {
+    for (const n of nodes) {
+      if (n.url && urlSet.has(normalizeUrl(n.url))) found.push({ id: n.id, url: n.url })
+      if (n.children) walk(n.children)
+    }
+  }
+  walk(tree)
+  return found
+}
+
 /* ---------- items ---------- */
 
 /** 同步/导入来的新行是否改动了"内容性"字段（决定 updatedAt 是否刷新）。 */
@@ -134,6 +168,9 @@ function mergePreserving(old: StarItem | undefined, incoming: StarItem): StarIte
     summary: old.summary,
     hidden: old.hidden,
     embedded: old.embedded,
+    reviewedAt: old.reviewedAt,
+    reviewCount: old.reviewCount,
+    reviewSkip: old.reviewSkip,
     createdAt: old.createdAt,
     updatedAt: dirty ? incoming.updatedAt : old.updatedAt,
   }
@@ -227,6 +264,133 @@ export function dedupeTags(tags: string[]): string[] {
     if (v && !out.includes(v)) out.push(v)
   }
   return out
+}
+
+/* ---------- 批量操作（阶段 B：批量加标签 / 隐藏 / 删除） ---------- */
+
+export type BatchAction =
+  | { kind: 'addTags'; ids: string[]; tags: string[] }
+  | { kind: 'removeTags'; ids: string[]; tags: string[] }
+  | { kind: 'setHidden'; ids: string[]; hidden: boolean }
+  | { kind: 'delete'; ids: string[] }
+
+export interface BatchResult {
+  affected: number
+  /** 被整行删除的条目（供 UI 提示“其中 n 条书签已从浏览器删除”） */
+  deletedRows: number
+  /** 其中同步删除了浏览器书签的条数 */
+  removedBookmarks: number
+}
+
+/**
+ * 批量应用编辑动作。全部在同一事务内完成，meta 计数随行变更同步增减。
+ * delete 会同时调用浏览器书签 API 删除真实书签（失败不影响本地行删除）。
+ */
+export async function applyBatch(action: BatchAction, opts?: { deleteBookmarks?: boolean }): Promise<BatchResult> {
+  const ids = [...new Set(action.ids)].filter(Boolean)
+  if (ids.length === 0) return { affected: 0, deletedRows: 0, removedBookmarks: 0 }
+  const deleteBookmarks = opts?.deleteBookmarks ?? true
+
+  const touched: string[] = []
+  let deletedRows = 0
+  let removedBookmarks = 0
+
+  if (action.kind === 'delete') {
+    // 先删浏览器书签（仅 bookmark 来源行；批量操作会触发 onRemoved 增量同步自动回写）。
+    // 仅本地行删除放在事务里。
+    if (deleteBookmarks) {
+      const rows = await db.items.bulkGet(ids)
+      const withBm = rows.filter((r) => r?.sources.includes('bookmark'))
+      if (withBm.length > 0) {
+        try {
+          const tree = (await browser.bookmarks.getTree()) as unknown as BmNode[]
+          const urlSet = new Set(withBm.map((r) => r!.url))
+          for (const target of collectBookmarkIdsByUrls(tree, urlSet)) {
+            try {
+              await browser.bookmarks.remove(target.id)
+              removedBookmarks++
+            } catch {
+              // 单个节点删除失败不阻塞其余
+            }
+          }
+        } catch {
+          // getTree 失败（权限等）不阻塞本地清理
+        }
+      }
+    }
+    await db.transaction('rw', db.items, db.meta, async () => {
+      const meta = await getAppMeta()
+      const rows = await db.items.bulkGet(ids)
+      for (const row of rows) {
+        if (!row) continue
+        applyItemDelta(meta, row, undefined)
+        deletedRows++
+      }
+      await db.items.bulkDelete(ids)
+      await saveAppMeta(meta)
+    })
+    return { affected: ids.length, deletedRows, removedBookmarks }
+  }
+
+  await db.transaction('rw', db.items, db.meta, async () => {
+    const meta = await getAppMeta()
+    const rows = await db.items.bulkGet(ids)
+    const toPut: StarItem[] = []
+    for (const row of rows) {
+      if (!row) continue
+      let next: StarItem | undefined
+      if (action.kind === 'addTags') {
+        const merged = dedupeTags([...(row.tags ?? []), ...action.tags])
+        if (merged.length !== (row.tags?.length ?? 0)) {
+          next = { ...row, tags: merged, updatedAt: Date.now() }
+        }
+      } else if (action.kind === 'removeTags') {
+        const rest = (row.tags ?? []).filter((t) => !action.tags.includes(t))
+        if (rest.length !== (row.tags ?? []).length) {
+          next = { ...row, tags: rest.length ? rest : undefined, updatedAt: Date.now() }
+        }
+      } else if (action.kind === 'setHidden') {
+        if (Boolean(row.hidden) !== action.hidden) {
+          next = { ...row, hidden: action.hidden || undefined, updatedAt: Date.now() }
+        }
+      }
+      if (next) {
+        applyItemDelta(meta, row, next)
+        toPut.push(next)
+        touched.push(next.id)
+      }
+    }
+    await db.items.bulkPut(toPut)
+    await saveAppMeta(meta)
+  })
+  return { affected: touched.length, deletedRows: 0, removedBookmarks: 0 }
+}
+
+/**
+ * 通用条目变换：对全部（或排除隐藏）条目应用 fn，返回变更 id。
+ * fn 返回 null/undefined 表示该条无变化。索引失效由调用方 bumpIndexVersion。
+ */
+export async function transformItems(
+  fn: (item: StarItem) => StarItem | null | undefined,
+  opts?: { skipHidden?: boolean },
+): Promise<string[]> {
+  const items = await db.items.toArray()
+  const changedIds: string[] = []
+  await db.transaction('rw', db.items, db.meta, async () => {
+    const meta = await getAppMeta()
+    const toPut: StarItem[] = []
+    for (const item of items) {
+      if (opts?.skipHidden && item.hidden) continue
+      const next = fn(item)
+      if (!next) continue
+      applyItemDelta(meta, item, next)
+      toPut.push(next)
+      changedIds.push(next.id)
+    }
+    await db.items.bulkPut(toPut)
+    await saveAppMeta(meta)
+  })
+  return changedIds
 }
 
 /* ---------- searchIndex ---------- */

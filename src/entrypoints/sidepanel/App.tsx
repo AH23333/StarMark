@@ -5,12 +5,17 @@ import { sendToBackground } from '~/core/msg'
 import { initTheme } from '~/core/theme'
 import { t, useT } from '~/core/i18n'
 import { CTX_MENU_ACTIONS, type ActivityEntry, type CtxMenuConfig, type ItemEditPatch, type UIPrefs } from '~/core/types'
+import { tagColor } from '~/core/tagcolor'
+import type { BatchAction } from '~/core/db'
+import type { ExportFormat } from '~/core/export'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
 import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
+import { dueReviewItems, recordReview, type ReviewCandidate, type ReviewVerdict } from '~/core/review'
+import { parseRepoFromUrl } from '~/core/convert'
 import { getIndexVersion } from '~/core/version'
 import type { BgState } from '~/core/msg'
 
-type PanelTab = 'tree' | 'tags' | 'activity' | 'hidden'
+type PanelTab = 'tree' | 'tags' | 'activity' | 'review' | 'hidden'
 
 const DEFAULT_PREFS: UIPrefs = {
   sort: 'relevance',
@@ -48,6 +53,9 @@ export default function App() {
   const [tags, setTags] = useState<{ name: string; count: number }[]>([])
   const [tree, setTree] = useState<FolderNode[] | null>(null)
   const [tab, setTab] = useState<PanelTab>('tree')
+  const [dueReview, setDueReview] = useState<ReviewCandidate[]>([])
+  const [reviewPos, setReviewPos] = useState(0)
+  const [reviewRevealed, setReviewRevealed] = useState(false)
   const [prefs, setPrefs] = useState<UIPrefs>(DEFAULT_PREFS)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null)
   const lastParamsRef = useRef<{
@@ -144,13 +152,25 @@ export default function App() {
     void browser.storage.local.set({ ui: prefs })
   }, [prefs])
 
-  // 动态 / 隐藏视图数据
+  // 动态 / 隐藏 / 回顾视图数据
   useEffect(() => {
     const w = workerRef.current
     if (!w) return
     if (tab === 'activity') w.postMessage({ type: 'activity' })
     if (tab === 'hidden') w.postMessage({ type: 'hidden' })
   }, [tab, indexVersion])
+
+  // 回顾队列：挂载 + 索引版本变化时重算（到期数用于页签徽标）
+  useEffect(() => {
+    if (!indexReady) return
+    void dueReviewItems(50)
+      .then((list) => {
+        setDueReview(list)
+        setReviewPos((p) => (p < list.length ? p : 0))
+        setReviewRevealed(false)
+      })
+      .catch(() => setDueReview([]))
+  }, [indexReady, indexVersion])
 
   // 搜索 / 浏览（120ms 防抖；空查询 = 浏览全部，带排序与过滤）
   useEffect(() => {
@@ -207,6 +227,87 @@ export default function App() {
     workerRef.current?.postMessage({ type: 'activity' })
   }
 
+  /* ---------- 批量模式（阶段 B）：多选 → 加标签 / 隐藏 / 删除 / 导出所选 ---------- */
+
+  const [batchMode, setBatchMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const toggleSelect = useCallback((id: string, on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
+  const exitBatchMode = useCallback(() => {
+    setBatchMode(false)
+    setSelected(new Set())
+  }, [])
+
+  const runBatch = useCallback(
+    async (action: { kind: 'addTags'; tags: string[] } | { kind: 'setHidden'; hidden: boolean } | { kind: 'delete' }) => {
+      if (selected.size === 0) return
+      if (action.kind === 'delete') {
+        const okDelete = window.confirm(t('batch.delete.confirm', { n: selected.size }))
+        if (!okDelete) return
+      }
+      const res = await sendToBackground({
+        type: 'batch',
+        action: { ...action, ids: [...selected] } as BatchAction,
+        deleteBookmarks: true,
+      })
+      if (!res.ok) {
+        showNotif(t('save.failed', { err: res.error ?? '' }))
+        return
+      }
+      if (action.kind === 'delete') {
+        showNotif(
+          t('batch.done.delete', {
+            n: res.batch?.affected ?? selected.size,
+            bm: res.batch?.removedBookmarks ?? 0,
+          }),
+        )
+        exitBatchMode()
+      } else if (action.kind === 'addTags') {
+        showNotif(t('batch.done.tags', { n: res.batch?.affected ?? 0, tags: action.tags.join(', ') }))
+      } else {
+        showNotif(t('batch.done.hidden', { n: res.batch?.affected ?? 0 }))
+      }
+      const st = await sendToBackground({ type: 'get-state' })
+      if (st.state) setState(st.state)
+    },
+    [selected, exitBatchMode],
+  )
+
+  const exportCurrent = useCallback(
+    async (format: ExportFormat) => {
+      try {
+        const ids = batchMode && selected.size > 0 ? [...selected] : null
+        const { buildExport, exportFilename } = await import('~/core/export')
+        const { db } = await import('~/core/db')
+        const items =
+          ids != null
+            ? (await db.items.bulkGet(ids)).filter((x): x is NonNullable<typeof x> => x != null)
+            : await db.items.toArray()
+        const { content, mime } = buildExport(format, items)
+        const blob = new Blob([content], { type: mime })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = exportFilename(format, ids ? 'selection' : undefined)
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 5000)
+        showNotif(t('export.done', { n: items.length, format }))
+      } catch (e) {
+        showNotif(t('export.failed', { err: (e as Error).message }))
+      }
+    },
+    [batchMode, selected],
+  )
+
+
   const openOptions = () => void browser.runtime.openOptionsPage()
 
   const updateItem = useCallback(
@@ -219,9 +320,48 @@ export default function App() {
 
   const searching = query.trim().length > 0
 
+  const handleVerdict = useCallback(
+    (verdict: ReviewVerdict) => {
+      const cur = dueReview[reviewPos]
+      if (!cur) return
+      void recordReview(cur.id, verdict).then(() => {
+        // indexVersion 变化会触发回顾队列重算；这里先本地推进，避免闪烁
+        setDueReview((prev) => prev.filter((x) => x.id !== cur.id))
+        setReviewRevealed(false)
+      })
+    },
+    [dueReview, reviewPos],
+  )
+
+  /** 一键互转：Star → 书签（本地创建，事件链自动合并）；书签 → Star（需 Starring: Write） */
+  const convertItem = useCallback(
+    async (hit: SearchHit, kind: 'toBookmark' | 'toStar') => {
+      try {
+        if (kind === 'toBookmark') {
+          const { bookmarkAStarItem } = await import('~/core/convert')
+          await bookmarkAStarItem({ title: hit.title, url: hit.url })
+          showNotif(t('convert.toBookmark.ok'))
+        } else {
+          const { starARepoItem } = await import('~/core/convert')
+          await starARepoItem(hit.id)
+          showNotif(t('convert.toStar.ok'))
+        }
+      } catch (e) {
+        showNotif(t('convert.failed', { err: (e as Error).message }))
+      }
+    },
+    [],
+  )
+
   const openCtx = (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => {
     e.preventDefault()
     setCtxMenu({ x: e.clientX, y: e.clientY, hit })
+  }
+
+  /** 点选导出格式后收起 <details> 下拉 */
+  const closeDetails = (e: ReactMouseEvent<HTMLElement>) => {
+    const d = (e.currentTarget as HTMLElement).closest('details')
+    d?.removeAttribute('open')
   }
 
   return (
@@ -331,10 +471,41 @@ export default function App() {
             <input type="checkbox" checked={prefs.showHidden} onChange={(e) => setPrefs((p) => ({ ...p, showHidden: e.target.checked }))} />
             {t('toolbar.showHidden')}
           </label>
+          <div className="spacer" />
+          <button
+            className={`btn mini${batchMode ? ' on' : ''}`}
+            title={t(batchMode ? 'batch.exitTitle' : 'batch.enterTitle')}
+            onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}
+          >
+            ☑ {t('batch.enter')}
+          </button>
+          <details className="export-dd">
+            <summary className="btn mini" title={t('export.title')}>
+              ⇩ {t('export.button')}
+            </summary>
+            <div className="export-menu">
+              <button onClick={(e) => { closeDetails(e); void exportCurrent('markdown') }}>{t('export.markdown')}</button>
+              <button onClick={(e) => { closeDetails(e); void exportCurrent('html') }}>{t('export.html')}</button>
+              <button onClick={(e) => { closeDetails(e); void exportCurrent('csv') }}>{t('export.csv')}</button>
+            </div>
+          </details>
         </div>
       )}
 
       <main className="content">
+        {batchMode && (
+          <BatchBar
+            count={selected.size}
+            onAddTags={(tags) => void runBatch({ kind: 'addTags', tags })}
+            onHide={() => void runBatch({ kind: 'setHidden', hidden: true })}
+            onUnhide={() => void runBatch({ kind: 'setHidden', hidden: false })}
+            onDelete={() => void runBatch({ kind: 'delete' })}
+            onExport={(fmt) => void exportCurrent(fmt)}
+            onExit={exitBatchMode}
+            allTags={tagNames}
+          />
+        )}
+
         {!state?.hasToken && (
           <div className="empty">
             <div className="empty-title">{t('empty.connectTitle')}</div>
@@ -379,6 +550,7 @@ export default function App() {
               [
                 ['tree', t('tab.folder')],
                 ['tags', `${t('tab.tags')}${tags.length ? `(${tags.length})` : ''}`],
+                ['review', `${t('tab.review')}${dueReview.length ? `(${dueReview.length})` : ''}`],
                 ['activity', t('tab.activity')],
                 ['hidden', `${t('tab.hidden')}${hiddenItems.length ? `(${hiddenItems.length})` : ''}`],
               ] as [PanelTab, string][]
@@ -451,6 +623,9 @@ export default function App() {
                       onTagClick={(t) => setQuery(t)}
                       onCtx={openCtx}
                       allTags={tagNames}
+                      batchMode={batchMode}
+                      selected={selected}
+                      onSelect={toggleSelect}
                     />
                   ))}
               </>
@@ -470,6 +645,15 @@ export default function App() {
               </ul>
             )}
           </>
+        )}
+
+        {!searching && indexReady && tab === 'review' && (
+          <ReviewView
+            queue={dueReview}
+            revealed={reviewRevealed}
+            onReveal={() => setReviewRevealed(true)}
+            onVerdict={handleVerdict}
+          />
         )}
 
         {!searching && indexReady && tab === 'hidden' && (
@@ -510,6 +694,10 @@ export default function App() {
                     onContextMenu={(e) => openCtx(e, h)}
                     showAvatar={prefs.letterAvatar !== false}
                     allTags={tagNames}
+                    selectable={batchMode}
+                    selected={selected.has(h.id)}
+                    onSelect={(on) => toggleSelect(h.id, on)}
+                    onConvert={convertItem}
                   />
                 ))}
               </section>
@@ -541,6 +729,184 @@ function relativeTime(ts: number): string {
   const d = Math.floor(h / 24)
   if (d < 30) return t('time.daysAgo', { d })
   return new Date(ts).toLocaleDateString()
+}
+
+/** 回顾视图（阶段 B）：两阶段卡片 —— 先回忆，再展示详情与判定 */
+function ReviewView({
+  queue,
+  revealed,
+  onReveal,
+  onVerdict,
+}: {
+  queue: ReviewCandidate[]
+  revealed: boolean
+  onReveal: () => void
+  onVerdict: (v: ReviewVerdict) => void
+}) {
+  if (queue.length === 0) {
+    return (
+      <div className="empty">
+        <div className="empty-title">{t('review.allDoneTitle')}</div>
+        <p>{t('review.allDoneDesc')}</p>
+      </div>
+    )
+  }
+  const cur = queue[0]!
+  const open = () => void browser.tabs.create({ url: cur.url, active: false })
+  return (
+    <div className="review-wrap">
+      <div className="review-progress">
+        {t('review.progress', { n: queue.length })}
+        <span className="review-streak">
+          {t('review.streak', { n: cur.reviewCount })}
+        </span>
+      </div>
+      <div className="review-card">
+        <div className="review-title" onClick={open}>
+          {cur.title}
+        </div>
+        <div className="review-meta">
+          <span className="review-added">{t('review.addedDaysAgo', { n: Math.max(1, Math.floor((Date.now() - cur.addedAt) / 86400000)) })}</span>
+          {cur.sinceLastReviewDays > 0 && (
+            <span className="review-last">{t('review.lastDaysAgo', { n: cur.sinceLastReviewDays })}</span>
+          )}
+          {cur.sources.includes('star') && <span className="badge star">{t('badge.star')}</span>}
+          {cur.sources.includes('bookmark') && <span className="badge bm">{t('badge.bookmark')}</span>}
+        </div>
+        {!revealed ? (
+          <>
+            <div className="review-hint">{t('review.hint')}</div>
+            <button className="btn primary review-reveal" onClick={onReveal}>
+              {t('review.reveal')}
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="card-url" onClick={open}>{cur.url}</div>
+            {cur.description && <div className="review-desc">{cur.description}</div>}
+            {cur.notes && <div className="review-note">📝 {cur.notes}</div>}
+            {cur.tags && cur.tags.length > 0 && (
+              <div className="tag-row">
+                {cur.tags.map((tg) => (
+                  <span key={tg} className="tag" style={{ color: tagColor(tg) }}>#{tg}</span>
+                ))}
+              </div>
+            )}
+            <div className="review-actions">
+              <button className="btn review-ok" onClick={() => onVerdict('remembered')}>
+                {t('review.remembered')}
+              </button>
+              <button className="btn review-forgot" onClick={() => onVerdict('forgot')}>
+                {t('review.forgot')}
+              </button>
+              <button className="btn review-never" onClick={() => onVerdict('never')}>
+                {t('review.never')}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 批量操作条：多选后的统一动作入口（加标签 / 隐藏 / 删除 / 导出所选） */
+function BatchBar({
+  count,
+  onAddTags,
+  onHide,
+  onUnhide,
+  onDelete,
+  onExport,
+  onExit,
+  allTags,
+}: {
+  count: number
+  onAddTags: (tags: string[]) => void
+  onHide: () => void
+  onUnhide: () => void
+  onDelete: () => void
+  onExport: (fmt: ExportFormat) => void
+  onExit: () => void
+  allTags: string[]
+}) {
+  const [tagDraft, setTagDraft] = useState('')
+  const [editingTags, setEditingTags] = useState(false)
+
+  const submitTags = () => {
+    const tags = tagDraft
+      .split(/[,，\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    if (tags.length > 0) onAddTags(tags)
+    setTagDraft('')
+    setEditingTags(false)
+  }
+
+  return (
+    <div className="batch-bar">
+      <div className="batch-row">
+        <span className="batch-count">{t('batch.selected', { n: count })}</span>
+        <button className="btn mini" onClick={() => setEditingTags((v) => !v)} title={t('batch.addTagsTitle')}>
+          🏷 {t('batch.addTags')}
+        </button>
+        <button className="btn mini" onClick={onHide} title={t('batch.hideTitle')}>
+          👁 {t('batch.hide')}
+        </button>
+        <button className="btn mini" onClick={onUnhide} title={t('batch.unhideTitle')}>
+          🙈 {t('batch.unhide')}
+        </button>
+        <button className="btn mini danger" onClick={onDelete} title={t('batch.deleteTitle')}>
+          🗑 {t('batch.delete')}
+        </button>
+        <details className="export-dd">
+          <summary className="btn mini" title={t('export.selectedTitle')}>
+            ⇩ {t('export.selected')}
+          </summary>
+          <div className="export-menu">
+            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('markdown') }}>{t('export.markdown')}</button>
+            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('html') }}>{t('export.html')}</button>
+            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('csv') }}>{t('export.csv')}</button>
+          </div>
+        </details>
+        <button className="btn mini" onClick={onExit} title={t('batch.exitTitle')}>
+          ✕
+        </button>
+      </div>
+      {editingTags && (
+        <div className="batch-row">
+          <input
+            className="batch-input"
+            autoFocus
+            value={tagDraft}
+            placeholder={t('batch.tagsPlaceholder')}
+            onChange={(e) => setTagDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submitTags()
+              if (e.key === 'Escape') setEditingTags(false)
+            }}
+          />
+          <button className="btn mini primary" onClick={submitTags}>
+            {t('common.save')}
+          </button>
+          {allTags.length > 0 && (
+            <div className="batch-suggest">
+              {allTags.slice(0, 16).map((tg) => (
+                <button
+                  key={tg}
+                  className="tag"
+                  style={{ color: tagColor(tg) }}
+                  onClick={() => setTagDraft(tagDraft.trim() ? `${tagDraft.trim()}, ${tg}` : tg)}
+                >
+                  +{tg}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 const ACT_ICON: Record<string, string> = {
@@ -620,6 +986,10 @@ function BrowseNode({
   onTagClick,
   onCtx,
   allTags,
+  batchMode,
+  selected,
+  onSelect,
+  onConvert,
 }: {
   node: FolderNode
   prefs: UIPrefs
@@ -630,6 +1000,10 @@ function BrowseNode({
   onTagClick: (tag: string) => void
   onCtx: (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => void
   allTags?: string[]
+  batchMode?: boolean
+  selected?: Set<string>
+  onSelect?: (id: string, on: boolean) => void
+  onConvert?: (hit: SearchHit, kind: 'toBookmark' | 'toStar') => void
 }) {
   const [open, setOpen] = useState(false)
   const [shown, setShown] = useState(100)
@@ -664,6 +1038,10 @@ function BrowseNode({
               onContextMenu={(e) => onCtx(e, h)}
               showAvatar={prefs.letterAvatar !== false}
               allTags={allTags}
+              selectable={batchMode}
+              selected={selected?.has(h.id)}
+              onSelect={(on) => onSelect?.(h.id, on)}
+              onConvert={onConvert}
             />
           ))}
           {shown < visible.length && (
@@ -683,6 +1061,9 @@ function BrowseNode({
               onTagClick={onTagClick}
               onCtx={onCtx}
               allTags={allTags}
+              batchMode={batchMode}
+              selected={selected}
+              onSelect={onSelect}
             />
           ))}
         </div>
@@ -922,6 +1303,10 @@ function ResultCard({
   onContextMenu,
   showAvatar,
   allTags,
+  selectable,
+  selected,
+  onSelect,
+  onConvert,
 }: {
   hit: SearchHit
   query: string
@@ -931,10 +1316,16 @@ function ResultCard({
   onContextMenu?: (e: ReactMouseEvent<HTMLDivElement>) => void
   showAvatar?: boolean
   allTags?: string[]
+  selectable?: boolean
+  selected?: boolean
+  onSelect?: (on: boolean) => void
+  onConvert?: (hit: SearchHit, kind: 'toBookmark' | 'toStar') => void
 }) {
   const open = () => void browser.tabs.create({ url: hit.url, active: false })
   const [editing, setEditing] = useState<'note' | 'tags' | null>(null)
   const [draft, setDraft] = useState('')
+  const canToBookmark = Boolean(onConvert) && !hit.sources.includes('bookmark')
+  const canToStar = Boolean(onConvert) && !hit.sources.includes('star') && parseRepoFromUrl(hit.url) != null
 
   const startEdit = (kind: 'note' | 'tags') => {
     setEditing(kind)
@@ -956,7 +1347,16 @@ function ResultCard({
 
   return (
     <div className={hit.hidden ? 'card dim' : 'card'} onContextMenu={onContextMenu}>
-      <div className="card-head" onClick={open}>
+      <div className="card-head" onClick={selectable ? () => onSelect?.(!selected) : open}>
+        {selectable && (
+          <input
+            type="checkbox"
+            className="card-check"
+            checked={Boolean(selected)}
+            onChange={(e) => onSelect?.(e.target.checked)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        )}
         {showAvatar !== false && <Favicon hit={hit} />}
         <span
           className="card-title"
@@ -1085,6 +1485,16 @@ function ResultCard({
         >
           {hit.hidden ? '🙈' : '👁'}
         </button>
+        {canToBookmark && (
+          <button className="btn mini" title={t('convert.toBookmark.title')} onClick={() => onConvert?.(hit, 'toBookmark')}>
+            🔖+
+          </button>
+        )}
+        {canToStar && (
+          <button className="btn mini" title={t('convert.toStar.title')} onClick={() => onConvert?.(hit, 'toStar')}>
+            ⭐+
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1096,14 +1506,6 @@ function hostOnly(url: string): string {
   } catch {
     return url
   }
-}
-
-/** 根据标签名生成稳定颜色 */
-function tagColor(tag: string): string {
-  let h = 0
-  for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0
-  const hue = h % 360
-  return `hsl(${hue}, 70%, 60%)`
 }
 
 function highlight(text: string, query: string): string {

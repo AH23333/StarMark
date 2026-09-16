@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it, beforeEach } from 'vitest'
-import { db, getAppMeta, getByUrl, stripSourceForUrls, updateItem, upsertItems, allItems } from './db'
+import { applyBatch, db, getAppMeta, getByUrl, stripSourceForUrls, updateItem, upsertItems, allItems } from './db'
 import { hashId, normalizeUrl } from './normalize'
 import type { StarItem } from './types'
 
@@ -95,6 +95,62 @@ describe('meta 计数一致性', () => {
     expect(m.bookmarks).toBe(0)
     await expect(getByUrl(normalizeUrl('https://github.com/o/b'))).resolves.toBeUndefined()
     expect((await getByUrl(normalizeUrl('https://github.com/o/a')))?.sources).toEqual(['star'])
+    expect((await allItems()).length).toBe(1)
+  })
+})
+
+describe('applyBatch 批量操作', () => {
+  it('addTags 合并去重、只更新实际变化的行并同步直方图', async () => {
+    await upsertItems([
+      item('a', 'o/a', ['star'], { tags: ['x'] }),
+      item('b', 'o/b', ['star']),
+      item('c', 'o/c', ['star'], { tags: ['x', 'y'] }),
+    ])
+    const res = await applyBatch({ kind: 'addTags', ids: ['a', 'b', 'c'], tags: ['x', 'z'] })
+    expect(res.affected).toBe(3)
+    expect((await getByUrl(normalizeUrl('https://github.com/o/a')))?.tags).toEqual(['x', 'z'])
+    expect((await getByUrl(normalizeUrl('https://github.com/o/b')))?.tags).toEqual(['x', 'z'])
+    expect((await getByUrl(normalizeUrl('https://github.com/o/c')))?.tags).toEqual(['x', 'y', 'z'])
+    const m = await getAppMeta()
+    expect(m.tags).toEqual({ x: 3, z: 3, y: 1 })
+    expect(m.tagged).toBe(3)
+  })
+
+  it('removeTags 移除后空标签数组被清掉', async () => {
+    await upsertItems([
+      item('a', 'o/a', ['star'], { tags: ['x', 'y'] }),
+      item('b', 'o/b', ['star'], { tags: ['y'] }),
+    ])
+    await applyBatch({ kind: 'removeTags', ids: ['a', 'b'], tags: ['x'] })
+    expect((await getByUrl(normalizeUrl('https://github.com/o/a')))?.tags).toEqual(['y'])
+    expect((await getByUrl(normalizeUrl('https://github.com/o/b')))?.tags).toEqual(['y'])
+    const m = await getAppMeta()
+    expect(m.tags).toEqual({ y: 2 })
+    expect(m.tagged).toBe(2)
+  })
+
+  it('setHidden 批量隐藏 / 恢复并维护计数', async () => {
+    await upsertItems([item('a', 'o/a', ['star']), item('b', 'o/b', ['star'])])
+    await applyBatch({ kind: 'setHidden', ids: ['a', 'b'], hidden: true })
+    expect((await getAppMeta()).hidden).toBe(2)
+    await applyBatch({ kind: 'setHidden', ids: ['a'], hidden: false })
+    expect((await getAppMeta()).hidden).toBe(1)
+  })
+
+  it('delete 移除本地行（deleteBookmarks=false 时不碰浏览器）', async () => {
+    await upsertItems([
+      item('a', 'o/a', ['star']),
+      item('b', 'o/b', ['bookmark']),
+      item('c', 'o/c', ['star', 'bookmark']),
+    ])
+    const res = await applyBatch({ kind: 'delete', ids: ['a', 'b'] }, { deleteBookmarks: false })
+    expect(res.affected).toBe(2)
+    expect(res.deletedRows).toBe(2)
+    expect(res.removedBookmarks).toBe(0)
+    const m = await getAppMeta()
+    expect(m.total).toBe(1)
+    expect(m.stars).toBe(1) // c 仍在（star+bookmark）
+    expect(m.bookmarks).toBe(1)
     expect((await allItems()).length).toBe(1)
   })
 })
