@@ -257,7 +257,7 @@ export default function App() {
   // 待审建议的条目标题（批量补齐一次）
   useEffect(() => {
     const ids = [...new Set(aiPending.map((p) => p.itemId))]
-    const clsIds = classifyResult ? Object.keys(classifyResult.assignments) : []
+    const clsIds = classifyResult && classifyResult.assignments ? Object.keys(classifyResult.assignments) : []
     if (ids.length === 0 && clsIds.length === 0) return
     void allItems().then((items) => {
       const map: Record<string, string> = {}
@@ -806,7 +806,79 @@ export default function App() {
               </span>
             )}
           </div>
+          <div className="row">
+            <button
+              className="btn primary"
+              disabled={!ai.enabled || classifyBusy || (ai.provider !== 'ollama' && !ai.apiKey)}
+              onClick={() => void runClassifyNow()}
+            >
+              {classifyBusy ? t('opt.ai.clsRunning') : t('opt.ai.clsRun')}
+            </button>
+            {ai.provider === 'ollama' && (
+              <button className="btn" disabled={aiBusy} onClick={() => void testOllama()}>
+                {t('opt.ai.testConn')}
+              </button>
+            )}
+            {classifyState && (
+              <span className="ai-state">
+                {classifyState.running
+                  ? t('opt.ai.clsProgress', { batch: classifyState.batch, total: classifyState.totalBatches })
+                  : t('opt.ai.clsState', { batch: classifyState.batch, total: classifyState.totalBatches })}
+                {classifyState.error ? ` · ${classifyState.error}` : ''}
+              </span>
+            )}
+          </div>
         </div>
+
+        {classifyResult && Array.isArray(classifyResult.groups) && classifyResult.groups.length > 0 && (
+          <>
+            <h3 className="sub-title">{t('opt.ai.clsGroupsHeading', { groups: classifyResult.groups.length, items: classifyResult.totalItems })}</h3>
+            <div className="row">
+              <button className="btn primary" disabled={classifyBusy} onClick={() => void applyGroups(null)}>
+                {t('opt.ai.clsApplyAll')}
+              </button>
+              <button className="btn" disabled={classifyBusy} onClick={() => void exportClassify()}>
+                {t('opt.ai.clsExport')}
+              </button>
+              <button className="btn" disabled={classifyBusy} onClick={() => fileRef2.current?.click()}>
+                {t('opt.ai.clsImport')}
+              </button>
+              <input
+                ref={fileRef2}
+                type="file"
+                accept=".json,application/json"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (file) void importClassify(file)
+                }}
+              />
+            </div>
+            <ul className="cls-groups">
+              {classifyResult.groups.map((g) => (
+                <li key={g.tag} className="cls-group">
+                  <div className="cls-group-head">
+                    <span className="cls-tag" style={{ color: tagColor(g.tag) }}>#{g.tag}</span>
+                    <span className="cls-count">{t('opt.ai.clsItemCount', { n: g.itemIds.length })}</span>
+                    <span className="spacer" />
+                    <button className="btn mini" disabled={classifyBusy} onClick={() => void applyGroups([g.tag])}>
+                      {t('opt.ai.clsApplyGroup')}
+                    </button>
+                  </div>
+                  <div className="cls-items">
+                    {g.itemIds.slice(0, 12).map((id) => (
+                      <span key={id} className="cls-item" title={id}>
+                        {classifyTitles[id] ?? id.slice(0, 8)}
+                      </span>
+                    ))}
+                    {g.itemIds.length > 12 && <span className="cls-item more">+{g.itemIds.length - 12}</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
 
         {aiPending.length > 0 && (
           <>

@@ -47,7 +47,17 @@ export const CLASSIFY_MAX_TAGS_PER_ITEM = 3
 
 export async function getClassifyResult(): Promise<ClassifyResult | undefined> {
   const s = await browser.storage.local.get(RESULT_KEY)
-  return s[RESULT_KEY] as ClassifyResult | undefined
+  const raw = s[RESULT_KEY] as Partial<ClassifyResult> | undefined
+  if (!raw) return undefined
+  // 防御性规范化：旧缓存/导入数据可能缺 assignments/groups 字段（渲染期 Object.keys(undefined) 会崩）
+  return {
+    createdAt: raw.createdAt ?? 0,
+    model: raw.model ?? '',
+    totalItems: raw.totalItems ?? 0,
+    assignments: raw.assignments ?? {},
+    groups: Array.isArray(raw.groups) ? raw.groups : [],
+    unmatched: raw.unmatched ?? 0,
+  }
 }
 
 export async function saveClassifyResult(r: ClassifyResult): Promise<void> {
