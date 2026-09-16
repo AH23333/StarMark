@@ -276,6 +276,15 @@ export default defineBackground(() => {
   /* ---------- 消息处理（Side Panel / Options → SW） ---------- */
   browser.runtime.onMessage.addListener(
     (msg: BgRequest, _sender, sendResponse: (res: BgResponse) => void) => {
+      const safe = (fn: () => void): boolean => {
+        try {
+          fn()
+          return true
+        } catch (e) {
+          sendResponse({ ok: false, error: (e as Error).message })
+          return true
+        }
+      }
       if (msg.type === 'run-sync') {
         if (syncRunning) {
           sendResponse({ ok: false, error: t('bg.err.syncRunning') })
