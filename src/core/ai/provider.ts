@@ -1,11 +1,11 @@
-import { browser } from 'wxt/browser'
+﻿import { browser } from 'wxt/browser'
 
 /**
  * LLM Provider 抽象（开发技术文档 §17）：用户自带 Key（BYOK），默认关闭。
  * 统一 chat 接口，输出纯 JSON 数组字符串由调用方解析。
  */
 
-export type ProviderKind = 'openai' | 'anthropic'
+export type ProviderKind = 'openai' | 'anthropic' | 'ollama'
 
 export interface AiSettings {
   enabled: boolean
@@ -14,6 +14,8 @@ export interface AiSettings {
   /** OpenAI 兼容端点（可指向代理/本地网关） */
   baseUrl?: string
   model: string
+  /** Ollama 本地服务地址（默认本机 11434） */
+  ollamaBaseUrl?: string
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
@@ -22,6 +24,7 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   apiKey: '',
   baseUrl: '',
   model: 'gpt-4o-mini',
+  ollamaBaseUrl: '',
 }
 
 const AI_KEY = '***'
@@ -45,7 +48,8 @@ export class AiDisabledError extends Error {
 
 /** 给定条目文本，返回建议标签（纯 JSON 数组）。 */
 export async function suggestTagsViaAi(settings: AiSettings, prompt: string): Promise<string[]> {
-  if (!settings.enabled || !settings.apiKey) throw new AiDisabledError()
+  if (!settings.enabled) throw new AiDisabledError()
+  if (settings.provider !== 'ollama' && !settings.apiKey) throw new AiDisabledError()
   const content = await chat(settings, prompt)
   return parseTagsJson(content)
 }
@@ -70,6 +74,7 @@ export function parseTagsJson(raw: string): string[] {
 
 async function chat(settings: AiSettings, prompt: string): Promise<string> {
   if (settings.provider === 'anthropic') return chatAnthropic(settings, prompt)
+  if (settings.provider === 'ollama') return chatOllama(settings, prompt)
   return chatOpenAiCompatible(settings, prompt)
 }
 
@@ -131,4 +136,39 @@ export function buildTagPrompt(input: { title: string; description?: string; not
   if (input.notes) lines.push(`备注：${input.notes}`)
   if (input.existingTags?.length) lines.push(`已有标签：${input.existingTags.join(', ')}`)
   return lines.join('\n')
+}
+
+/** Ollama 本地模型（默认 http://localhost:11434，无需 API Key）。 */
+export async function ollamaBaseUrlOf(settings: AiSettings): Promise<string> {
+  return (settings.ollamaBaseUrl?.trim() || 'http://localhost:11434').replace(/\/$/, '')
+}
+
+async function chatOllama(settings: AiSettings, prompt: string): Promise<string> {
+  const base = await ollamaBaseUrlOf(settings)
+  const res = await fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: settings.model || 'llama3.2',
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+      options: { temperature: 0.2 },
+    }),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    if (res.status === 404) throw new Error('Ollama 端点不存在：请确认服务已启动（ollama serve）且地址正确')
+    throw new Error(`Ollama 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+  }
+  const data = (await res.json()) as { message?: { content?: string } }
+  return data.message?.content ?? ''
+}
+
+/** 连接测试：列出本地可用模型，用于设置页"测试连接"。返回模型名列表。 */
+export async function listOllamaModels(settings: AiSettings): Promise<string[]> {
+  const base = await ollamaBaseUrlOf(settings)
+  const res = await fetch(`${base}/api/tags`)
+  if (!res.ok) throw new Error(`Ollama 连接失败 (${res.status})`)
+  const data = (await res.json()) as { models?: { name: string }[] }
+  return (data.models ?? []).map((m) => m.name)
 }

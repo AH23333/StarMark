@@ -5,7 +5,7 @@ import { buildBackup, parseBackup, restoreBackup } from '~/core/backup'
 import { buildExport, exportFilename, type ExportFormat } from '~/core/export'
 import { getRules, saveRules, newRuleId, type RuleMatchType, type TagRule } from '~/core/rules'
 import { tagColor } from '~/core/tagcolor'
-import { DEFAULT_AI_SETTINGS, getAiSettings, saveAiSettings, type AiSettings, type ProviderKind } from '~/core/ai/provider'
+import { DEFAULT_AI_SETTINGS, getAiSettings, saveAiSettings, listOllamaModels, type AiSettings, type ProviderKind } from '~/core/ai/provider'
 import type { AiPipelineState } from '~/core/ai/pipeline'
 import type { TagSuggestion } from '~/core/types'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
@@ -68,6 +68,18 @@ export default function App() {
     setAi(next)
     await saveAiSettings(next)
     setMsg({ kind: 'ok', text: t('opt.ai.saved') })
+  }
+
+  const testOllama = async () => {
+    setAiBusy(true)
+    try {
+      const models = await listOllamaModels(ai)
+      setMsg({ kind: 'ok', text: t('opt.ai.ollamaOk', { models: models.slice(0, 5).join(', ') || t('opt.ai.ollamaNone') }) })
+    } catch (e) {
+      setMsg({ kind: 'err', text: t('opt.ai.ollamaFail', { err: (e as Error).message }) })
+    } finally {
+      setAiBusy(false)
+    }
   }
 
   const runAi = async () => {
@@ -661,22 +673,34 @@ export default function App() {
           <select value={ai.provider} onChange={(e) => void saveAi({ ...ai, provider: e.target.value as ProviderKind })}>
             <option value="openai">OpenAI 兼容</option>
             <option value="anthropic">Anthropic</option>
+            <option value="ollama">Ollama（本地模型）</option>
           </select>
+          {ai.provider !== 'ollama' && (
+            <input
+              className="rule-input"
+              type="password"
+              placeholder={t('opt.ai.keyPh')}
+              value={ai.apiKey}
+              onChange={(e) => setAi((s) => ({ ...s, apiKey: e.target.value }))}
+              onBlur={() => void saveAi(ai)}
+            />
+          )}
           <input
             className="rule-input"
-            type="password"
-            placeholder={t('opt.ai.keyPh')}
-            value={ai.apiKey}
-            onChange={(e) => setAi((s) => ({ ...s, apiKey: e.target.value }))}
-            onBlur={() => void saveAi(ai)}
-          />
-          <input
-            className="rule-input"
-            placeholder={t('opt.ai.modelPh')}
+            placeholder={ai.provider === 'ollama' ? t('opt.ai.modelOllamaPh') : t('opt.ai.modelPh')}
             value={ai.model}
             onChange={(e) => setAi((s) => ({ ...s, model: e.target.value }))}
             onBlur={() => void saveAi(ai)}
           />
+          {ai.provider === 'ollama' && (
+            <input
+              className="rule-input"
+              placeholder={t('opt.ai.ollamaUrlPh')}
+              value={ai.ollamaBaseUrl ?? ''}
+              onChange={(e) => setAi((s) => ({ ...s, ollamaBaseUrl: e.target.value }))}
+              onBlur={() => void saveAi(ai)}
+            />
+          )}
           {ai.provider === 'openai' && (
             <input
               className="rule-input"
@@ -687,9 +711,18 @@ export default function App() {
             />
           )}
           <div className="row">
-            <button className="btn primary" disabled={!ai.enabled || aiBusy || !ai.apiKey} onClick={() => void runAi()}>
+            <button
+              className="btn primary"
+              disabled={!ai.enabled || aiBusy || (ai.provider !== 'ollama' && !ai.apiKey)}
+              onClick={() => void runAi()}
+            >
               {aiBusy ? t('opt.ai.running') : t('opt.ai.run')}
             </button>
+            {ai.provider === 'ollama' && (
+              <button className="btn" disabled={aiBusy} onClick={() => void testOllama()}>
+                {t('opt.ai.testConn')}
+              </button>
+            )}
             {aiState && (
               <span className="ai-state">
                 {t('opt.ai.state', { scanned: aiState.scanned, suggested: aiState.suggested })}
