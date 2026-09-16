@@ -4,7 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>StarMark 设置</title>
-  </head>
+    <script>
+    // StarMark 调试：页面级错误直接显示在页面上（白屏时可见）
+    window.addEventListener('error', (e) => {
+      const el = document.createElement('pre')
+      el.id = 'starmark-error-overlay'
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fee2e2;color:#991b1b;padding:12px;font:12px monospace;white-space:pre-wrap;margin:0'
+      el.textContent = '[Error] ' + (e.message || '') + '\n' + ((e.filename || '') + ':' + (e.lineno || ''))
+      document.body ? document.body.prepend(el) : window.addEventListener('DOMContentLoaded', () => document.body.prepend(el))
+    })
+    window.addEventListener('unhandledrejection', (e) => {
+      const el = document.createElement('pre')
+      el.id = 'starmark-error-overlay'
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fee2e2;color:#991b1b;padding:12px;font:12px monospace;white-space:pre-wrap;margin:0'
+      el.textContent = '[Promise] ' + ((e.reason && (e.reason.stack || e.reason.message)) || String(e.reason))
+      document.body ? document.body.prepend(el) : window.addEventListener('DOMContentLoaded', () => document.body.prepend(el))
+    })
+  </script>
+</head>
   <body>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>

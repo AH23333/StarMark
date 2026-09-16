@@ -996,7 +996,7 @@ export function onLangChange(fn: () => void): () => void {
 }
 
 export function t(key: string, vars?: Record<string, string | number>): string {
-  let s = dicts[lang][key] ?? zhCN[key] ?? key
+  let s = dicts[lang]?.[key] ?? zhCN[key] ?? key
   if (vars) {
     for (const [k, v] of Object.entries(vars)) s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
   }
