@@ -1,9 +1,7 @@
 export type Source = 'star' | 'bookmark'
 
 /** 用户可编辑的条目字段（右键菜单/编辑器），贯穿 msg.ts、db、worker、UI 的唯一事实源 */
-export type ItemEditPatch = Partial<
-  Pick<StarItem, 'notes' | 'tags' | 'hidden' | 'reviewedAt' | 'reviewCount' | 'reviewSkip'>
->
+export type ItemEditPatch = Partial<Pick<StarItem, 'notes' | 'tags' | 'hidden'>>
 
 /** GitHub 仓库的 Star 元信息 */
 export interface StarMeta {

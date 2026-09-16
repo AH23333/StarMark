@@ -1,14 +1,10 @@
 import { browser } from 'wxt/browser'
-import { GitHubApiError, starRepo } from './api/github'
-import { db, upsertItems } from './db'
+import { GitHubApiError, getRepo, starRepo } from './api/github'
+import { repoToItem } from './api/mappers'
+import { db, getByUrl, upsertItems } from './db'
+import { hashId, normalizeUrl } from './normalize'
 import { bumpIndexVersion } from './version'
-import type { StarMeta } from './types'
-
-/**
- * 一键互转（阶段 B）：打通 Star 与书签两个孤岛。
- *  - Star → 书签：在「StarMark 收藏」文件夹创建书签，onCreated 事件自动合并来源
- *  - 书签 → Star：PUT /user/starred（需 Starring: Write 权限），成功后乐观合并本地行
- */
+import type { StarItem, StarMeta } from './types'
 
 export const COLLECT_FOLDER_TITLE = 'StarMark 收藏'
 
@@ -95,4 +91,28 @@ export async function starARepoItem(id: string): Promise<void> {
     },
   ])
   await bumpIndexVersion([item.id])
+}
+
+/**
+ * 热榜推荐 → Star：加 Star 后拉取仓库详情入库（已有行只合并来源，不覆盖用户字段）。
+ * 详情拉取失败不影响 Star 本身成功。
+ */
+export async function starTrendingRepo(fullName: string): Promise<void> {
+  const parts = fullName.split('/')
+  const owner = parts[0]
+  const repo = parts[1]
+  if (!owner || !repo) throw new GitHubApiError(400, '非法仓库名')
+  await starRepo(owner, repo)
+  try {
+    const ghRepo = await getRepo(owner, repo)
+    const fresh = repoToItem(ghRepo)
+    const existing = await getByUrl(fresh.url)
+    const sources = existing
+      ? (Array.from(new Set([...existing.sources, 'star' as const])) as StarItem['sources'])
+      : (['star'] as StarItem['sources'])
+    await upsertItems([{ ...fresh, sources }])
+    await bumpIndexVersion([existing?.id ?? fresh.id])
+  } catch {
+    // 详情入库失败不影响 Star
+  }
 }

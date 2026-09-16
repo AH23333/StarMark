@@ -10,12 +10,12 @@ import type { BatchAction } from '~/core/db'
 import type { ExportFormat } from '~/core/export'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
 import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
-import { dueReviewItems, recordReview, type ReviewCandidate, type ReviewVerdict } from '~/core/review'
+import { fetchTrending, type TrendingPeriod, type TrendingRepo } from '~/core/trending'
 import { parseRepoFromUrl } from '~/core/convert'
 import { getIndexVersion } from '~/core/version'
 import type { BgState } from '~/core/msg'
 
-type PanelTab = 'tree' | 'tags' | 'activity' | 'review' | 'hidden'
+type PanelTab = 'tree' | 'tags' | 'activity' | 'trending' | 'hidden'
 
 const DEFAULT_PREFS: UIPrefs = {
   sort: 'relevance',
@@ -53,9 +53,11 @@ export default function App() {
   const [tags, setTags] = useState<{ name: string; count: number }[]>([])
   const [tree, setTree] = useState<FolderNode[] | null>(null)
   const [tab, setTab] = useState<PanelTab>('tree')
-  const [dueReview, setDueReview] = useState<ReviewCandidate[]>([])
-  const [reviewPos, setReviewPos] = useState(0)
-  const [reviewRevealed, setReviewRevealed] = useState(false)
+  const [trendingList, setTrendingList] = useState<TrendingRepo[]>([])
+  const [trendingPeriod, setTrendingPeriod] = useState<TrendingPeriod>('weekly')
+  const [trendingLoading, setTrendingLoading] = useState(false)
+  const [trendingError, setTrendingError] = useState('')
+  const [starredRepos, setStarredRepos] = useState<Set<string>>(new Set())
   const [prefs, setPrefs] = useState<UIPrefs>(DEFAULT_PREFS)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null)
   const lastParamsRef = useRef<{
@@ -160,17 +162,29 @@ export default function App() {
     if (tab === 'hidden') w.postMessage({ type: 'hidden' })
   }, [tab, indexVersion])
 
-  // 回顾队列：挂载 + 索引版本变化时重算（到期数用于页签徽标）
+  // 热榜推荐：切到页签或周期变化时拉取；索引变化时刷新已 Star 集合
   useEffect(() => {
-    if (!indexReady) return
-    void dueReviewItems(50)
-      .then((list) => {
-        setDueReview(list)
-        setReviewPos((p) => (p < list.length ? p : 0))
-        setReviewRevealed(false)
-      })
-      .catch(() => setDueReview([]))
-  }, [indexReady, indexVersion])
+    if (tab !== 'trending') return
+    setTrendingLoading(true)
+    setTrendingError('')
+    void fetchTrending(trendingPeriod)
+      .then((list) => setTrendingList(list))
+      .catch((e) => setTrendingError((e as Error).message))
+      .finally(() => setTrendingLoading(false))
+  }, [tab, trendingPeriod])
+
+  useEffect(() => {
+    if (tab !== 'trending' || !indexReady) return
+    void import('~/core/db').then(({ allItems }) =>
+      allItems().then((items) => {
+        const names = new Set(
+          items.filter((i) => i.sources.includes('star')).map((i) => i.starMeta?.fullName ?? ''),
+        )
+        names.delete('')
+        setStarredRepos(names)
+      }),
+    )
+  }, [tab, indexReady, indexVersion])
 
   // 搜索 / 浏览（120ms 防抖；空查询 = 浏览全部，带排序与过滤）
   useEffect(() => {
@@ -320,17 +334,31 @@ export default function App() {
 
   const searching = query.trim().length > 0
 
-  const handleVerdict = useCallback(
-    (verdict: ReviewVerdict) => {
-      const cur = dueReview[reviewPos]
-      if (!cur) return
-      void recordReview(cur.id, verdict).then(() => {
-        // indexVersion 变化会触发回顾队列重算；这里先本地推进，避免闪烁
-        setDueReview((prev) => prev.filter((x) => x.id !== cur.id))
-        setReviewRevealed(false)
-      })
+  const starTrending = useCallback(
+    async (repo: TrendingRepo) => {
+      try {
+        const { starTrendingRepo } = await import('~/core/convert')
+        await starTrendingRepo(repo.fullName)
+        setStarredRepos((prev) => new Set(prev).add(repo.fullName))
+        showNotif(t('trending.starred', { repo: repo.fullName }))
+      } catch (e) {
+        showNotif(t('save.failed', { err: (e as Error).message }))
+      }
     },
-    [dueReview, reviewPos],
+    [],
+  )
+
+  const bookmarkTrending = useCallback(
+    async (repo: TrendingRepo) => {
+      try {
+        const { bookmarkAStarItem } = await import('~/core/convert')
+        await bookmarkAStarItem({ title: repo.fullName, url: repo.url })
+        showNotif(t('convert.toBookmark.ok'))
+      } catch (e) {
+        showNotif(t('save.failed', { err: (e as Error).message }))
+      }
+    },
+    [],
   )
 
   /** 一键互转：Star → 书签（本地创建，事件链自动合并）；书签 → Star（需 Starring: Write） */
@@ -550,7 +578,7 @@ export default function App() {
               [
                 ['tree', t('tab.folder')],
                 ['tags', `${t('tab.tags')}${tags.length ? `(${tags.length})` : ''}`],
-                ['review', `${t('tab.review')}${dueReview.length ? `(${dueReview.length})` : ''}`],
+                ['trending', t('tab.trending')],
                 ['activity', t('tab.activity')],
                 ['hidden', `${t('tab.hidden')}${hiddenItems.length ? `(${hiddenItems.length})` : ''}`],
               ] as [PanelTab, string][]
@@ -647,12 +675,17 @@ export default function App() {
           </>
         )}
 
-        {!searching && indexReady && tab === 'review' && (
-          <ReviewView
-            queue={dueReview}
-            revealed={reviewRevealed}
-            onReveal={() => setReviewRevealed(true)}
-            onVerdict={handleVerdict}
+        {!searching && indexReady && tab === 'trending' && (
+          <TrendingView
+            list={trendingList}
+            loading={trendingLoading}
+            error={trendingError}
+            period={trendingPeriod}
+            starred={starredRepos}
+            onPeriod={(p) => setTrendingPeriod(p)}
+            onStar={(r) => void starTrending(r)}
+            onBookmark={(r) => void bookmarkTrending(r)}
+            onRefresh={() => setTrendingPeriod((p) => p)}
           />
         )}
 
@@ -731,81 +764,88 @@ function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString()
 }
 
-/** 回顾视图（阶段 B）：两阶段卡片 —— 先回忆，再展示详情与判定 */
-function ReviewView({
-  queue,
-  revealed,
-  onReveal,
-  onVerdict,
+/** 热榜推荐视图：抓取 github.com/trending，一键 Star / 存书签 */
+function TrendingView({
+  list,
+  loading,
+  error,
+  period,
+  starred,
+  onPeriod,
+  onStar,
+  onBookmark,
+  onRefresh,
 }: {
-  queue: ReviewCandidate[]
-  revealed: boolean
-  onReveal: () => void
-  onVerdict: (v: ReviewVerdict) => void
+  list: TrendingRepo[]
+  loading: boolean
+  error: string
+  period: TrendingPeriod
+  starred: Set<string>
+  onPeriod: (p: TrendingPeriod) => void
+  onStar: (r: TrendingRepo) => void
+  onBookmark: (r: TrendingRepo) => void
+  onRefresh: () => void
 }) {
-  if (queue.length === 0) {
-    return (
-      <div className="empty">
-        <div className="empty-title">{t('review.allDoneTitle')}</div>
-        <p>{t('review.allDoneDesc')}</p>
-      </div>
-    )
-  }
-  const cur = queue[0]!
-  const open = () => void browser.tabs.create({ url: cur.url, active: false })
   return (
-    <div className="review-wrap">
-      <div className="review-progress">
-        {t('review.progress', { n: queue.length })}
-        <span className="review-streak">
-          {t('review.streak', { n: cur.reviewCount })}
-        </span>
+    <div className="trending-wrap">
+      <div className="trending-toolbar">
+        {(
+          [
+            ['daily', t('trending.daily')],
+            ['weekly', t('trending.weekly')],
+            ['monthly', t('trending.monthly')],
+          ] as [TrendingPeriod, string][]
+        ).map(([k, label]) => (
+          <button key={k} className={'seg-btn' + (period === k ? ' on' : '')} onClick={() => onPeriod(k)}>
+            {label}
+          </button>
+        ))}
+        <span className="spacer" />
+        <button className="btn mini" onClick={onRefresh} title={t('trending.refreshTitle')}>
+          ↻ {t('trending.refresh')}
+        </button>
       </div>
-      <div className="review-card">
-        <div className="review-title" onClick={open}>
-          {cur.title}
-        </div>
-        <div className="review-meta">
-          <span className="review-added">{t('review.addedDaysAgo', { n: Math.max(1, Math.floor((Date.now() - cur.addedAt) / 86400000)) })}</span>
-          {cur.sinceLastReviewDays > 0 && (
-            <span className="review-last">{t('review.lastDaysAgo', { n: cur.sinceLastReviewDays })}</span>
-          )}
-          {cur.sources.includes('star') && <span className="badge star">{t('badge.star')}</span>}
-          {cur.sources.includes('bookmark') && <span className="badge bm">{t('badge.bookmark')}</span>}
-        </div>
-        {!revealed ? (
-          <>
-            <div className="review-hint">{t('review.hint')}</div>
-            <button className="btn primary review-reveal" onClick={onReveal}>
-              {t('review.reveal')}
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="card-url" onClick={open}>{cur.url}</div>
-            {cur.description && <div className="review-desc">{cur.description}</div>}
-            {cur.notes && <div className="review-note">📝 {cur.notes}</div>}
-            {cur.tags && cur.tags.length > 0 && (
-              <div className="tag-row">
-                {cur.tags.map((tg) => (
-                  <span key={tg} className="tag" style={{ color: tagColor(tg) }}>#{tg}</span>
-                ))}
+
+      {loading && <div className="empty">{t('trending.loading')}</div>}
+      {!loading && error && <div className="empty">{t('trending.error', { err: error })}</div>}
+      {!loading && !error && list.length === 0 && <div className="empty">{t('trending.empty')}</div>}
+
+      {!loading &&
+        !error &&
+        list.map((r, idx) => {
+          const isStarred = starred.has(r.fullName)
+          return (
+            <div key={r.fullName} className="trending-card">
+              <div className="trending-rank">{idx + 1}</div>
+              <div className="trending-body">
+                <div className="trending-title" onClick={() => void browser.tabs.create({ url: r.url, active: false })}>
+                  {r.fullName}
+                </div>
+                {r.description && <div className="trending-desc">{r.description}</div>}
+                <div className="trending-meta">
+                  {r.language && <span className="trending-lang">{r.language}</span>}
+                  <span>★ {r.stars.toLocaleString()}</span>
+                  {typeof r.starsToday === 'number' && (
+                    <span className="trending-today">＋{r.starsToday.toLocaleString()} {t('trending.starsToday')}</span>
+                  )}
+                </div>
               </div>
-            )}
-            <div className="review-actions">
-              <button className="btn review-ok" onClick={() => onVerdict('remembered')}>
-                {t('review.remembered')}
-              </button>
-              <button className="btn review-forgot" onClick={() => onVerdict('forgot')}>
-                {t('review.forgot')}
-              </button>
-              <button className="btn review-never" onClick={() => onVerdict('never')}>
-                {t('review.never')}
-              </button>
+              <div className="trending-actions">
+                <button
+                  className={'btn mini' + (isStarred ? ' on' : '')}
+                  disabled={isStarred}
+                  title={isStarred ? t('trending.alreadyStarred') : t('trending.star')}
+                  onClick={() => onStar(r)}
+                >
+                  {isStarred ? '★' : '☆'} {isStarred ? t('trending.starred') : t('trending.star')}
+                </button>
+                <button className="btn mini" title={t('trending.saveBookmark')} onClick={() => onBookmark(r)}>
+                  🔖+
+                </button>
+              </div>
             </div>
-          </>
-        )}
-      </div>
+          )
+        })}
     </div>
   )
 }

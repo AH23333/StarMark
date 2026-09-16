@@ -132,3 +132,7 @@ export async function starRepo(owner: string, repo: string): Promise<void> {
   if (res.status === 404) throw new GitHubApiError(404, '仓库不存在')
   if (!res.ok) throw new GitHubApiError(res.status, `GitHub API 错误 (${res.status})`)
 }
+/** 拉取单个仓库详情（加 Star 后入库用）。 */
+export async function getRepo(owner: string, repo: string): Promise<GitHubRepo> {
+  return githubFetch<GitHubRepo>('/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo))
+}

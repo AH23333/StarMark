@@ -10,6 +10,8 @@ export default defineConfig({
     default_locale: 'zh_CN',
     description: '__MSG_extDesc__',
     permissions: ['bookmarks', 'storage', 'sidePanel', 'alarms', 'contextMenus'],
+    // localhost:11434 = Ollama 本地模型（扩展页面跨域需显式授权）；github.com = 热榜页抓取
+    host_permissions: ['https://github.com/*', 'http://localhost:11434/*', 'http://127.0.0.1/*'],
     commands: {
       'open-sidepanel': {
         suggested_key: { default: 'Alt+S', mac: 'MacCtrl+Shift+S' },

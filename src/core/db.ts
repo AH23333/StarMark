@@ -168,9 +168,6 @@ function mergePreserving(old: StarItem | undefined, incoming: StarItem): StarIte
     summary: old.summary,
     hidden: old.hidden,
     embedded: old.embedded,
-    reviewedAt: old.reviewedAt,
-    reviewCount: old.reviewCount,
-    reviewSkip: old.reviewSkip,
     createdAt: old.createdAt,
     updatedAt: dirty ? incoming.updatedAt : old.updatedAt,
   }
