@@ -1,7 +1,9 @@
 export type Source = 'star' | 'bookmark'
 
 /** 用户可编辑的条目字段（右键菜单/编辑器），贯穿 msg.ts、db、worker、UI 的唯一事实源 */
-export type ItemEditPatch = Partial<Pick<StarItem, 'notes' | 'tags' | 'hidden'>>
+export type ItemEditPatch = Partial<
+  Pick<StarItem, 'notes' | 'tags' | 'hidden' | 'reviewedAt' | 'reviewCount' | 'reviewSkip'>
+>
 
 /** GitHub 仓库的 Star 元信息 */
 export interface StarMeta {
@@ -43,6 +45,10 @@ export interface StarItem {
   summary?: string
   tags?: string[]
   embedded?: Float32Array | null
+  /** 回顾模式（阶段 B）：最近一次回顾时间戳 / 连续“记住了”次数 / 不再提醒 */
+  reviewedAt?: number
+  reviewCount?: number
+  reviewSkip?: boolean
 }
 
 /** 动态时间线条目：Star/书签的新增与移除 */
@@ -54,6 +60,18 @@ export interface ActivityEntry {
   kind: ActivityKind
   title: string
   url: string
+}
+
+export type SuggestionStatus = 'pending' | 'approved' | 'rejected'
+
+/** AI 建议桶：建议标签先暂存，批准后才并入 items.tags（阶段 B AI 审核机制） */
+export interface TagSuggestion {
+  /** `${itemId}|${tag}` */
+  id: string
+  itemId: string
+  tag: string
+  status: SuggestionStatus
+  createdAt: number
 }
 
 export type GitHubSyncPhase = 'VALIDATE' | 'FETCH_PAGES' | 'RECONCILE' | 'TAG_INDEX' | 'DONE'
