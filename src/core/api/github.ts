@@ -108,3 +108,27 @@ export async function listStarred(
 export async function validateToken(): Promise<GitHubUser> {
   return githubFetch<GitHubUser>('/user')
 }
+
+/**
+ * 给仓库加 Star（PUT /user/starred/{owner}/{repo}）。
+ * 需要 Token 具备 Starring: Write 权限；成功返回 204（无 body，不能用通用 githubFetch 的 json 解析）。
+ */
+export async function starRepo(owner: string, repo: string): Promise<void> {
+  const token = await getToken()
+  if (!token) throw new GitHubApiError(401, '未配置 Token')
+
+  const headers = new Headers()
+  headers.set('Accept', 'application/vnd.github+json')
+  headers.set('Authorization', `Bearer ${token}`)
+  headers.set('X-GitHub-Api-Version', '2022-11-28')
+
+  const res = await fetch(`${API_BASE}/user/starred/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+    method: 'PUT',
+    headers,
+  })
+  if (res.status === 204) return
+  if (res.status === 401) throw new GitHubApiError(401, 'Token 无效，请重新配置')
+  if (res.status === 403) throw new GitHubApiError(403, '需要 Starring: Write 权限（或已限流）')
+  if (res.status === 404) throw new GitHubApiError(404, '仓库不存在')
+  if (!res.ok) throw new GitHubApiError(res.status, `GitHub API 错误 (${res.status})`)
+}
