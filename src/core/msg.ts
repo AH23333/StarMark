@@ -19,6 +19,7 @@ export type BgRequest =
   | { type: 'ai-approve'; ids: string[] }
   | { type: 'ai-reject'; ids: string[] }
   | { type: 'ai-classify-run' }
+  | { type: 'ai-pause' }
   | { type: 'ai-classify-state' }
   | { type: 'ai-classify-apply'; groupTags?: string[] | null }
   | { type: 'ai-classify-export' }

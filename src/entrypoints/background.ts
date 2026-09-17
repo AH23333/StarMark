@@ -6,14 +6,7 @@ import { BM_SYNC_STATE_KEY, maybeRestoreBookmarks, registerBookmarkListeners, wa
 import { getAppMeta, getSyncState, updateItem, applyBatch } from '~/core/db'
 import { applyRulesToAll } from '~/core/rules'
 import { runAiSuggestPipeline, getAiPipelineState, pendingSuggestions, approveSuggestions, rejectSuggestions } from '~/core/ai/pipeline'
-import {
-  runClassify,
-  getClassifyState,
-  getClassifyResult,
-  applyClassifications,
-  exportClassifications,
-  importClassifications,
-} from '~/core/ai/classify'
+import { runClassify, pauseClassify, getClassifyState, getClassifyResult, applyClassifications, exportClassifications, importClassifications } from '~/core/ai/classify'
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
@@ -376,6 +369,7 @@ export default defineBackground(() => {
       return { ok: true, pending: await pendingSuggestions() }
     },
     'ai-classify-run': async () => ({ ok: true, classifyState: await runClassify() }),
+    'ai-pause': async () => ({ ok: true, classifyState: await pauseClassify() }),
     'ai-classify-state': async () => ({
       ok: true,
       classifyState: await getClassifyState(),

@@ -1,0 +1,62 @@
+﻿
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mD:/Visual Studio Code/Something/StarMark[39m
+
+[90mstdout[2m | src/core/ai/classify.test.ts[2m > [22m[2m批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m[2m暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复
+[22m[39m[debug] call= [33m1[39m state= {"running":true,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789640239309,"cancelRequested":false,"paused":false,"lastBeatAt":1789640239311}
+
+[90mstdout[2m | src/core/ai/classify.test.ts[2m > [22m[2m批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m[2m暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复
+[22m[39m[debug] paused1= {"running":true,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789640239309,"cancelRequested":true,"paused":false,"lastBeatAt":1789640239346}
+
+[90mstdout[2m | src/core/ai/classify.test.ts[2m > [22m[2m批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m[2m暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复
+[22m[39m[debug3] final= {"running":false,"batch":1,"totalBatches":2,"classified":50,"startedAt":1789640239309,"cancelRequested":false,"paused":true,"lastBeatAt":1789640239347,"doneAt":1789640239347} call= [33m1[39m
+[debug2] final= {"running":false,"batch":1,"totalBatches":2,"classified":50,"startedAt":1789640239309,"cancelRequested":false,"paused":true,"lastBeatAt":1789640239347,"doneAt":1789640239347}
+
+[90mstdout[2m | src/core/ai/classify.test.ts[2m > [22m[2m批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m[2m暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复
+[22m[39m[debug2] again= {"running":false,"batch":1,"totalBatches":2,"classified":50,"startedAt":1789640239309,"cancelRequested":false,"paused":true,"error":"AI 未启用或未配置 Key","lastBeatAt":1789640239347,"doneAt":1789640239347}
+
+ [31m❯[39m src/core/ai/classify.test.ts [2m([22m[2m8 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 106[2mms[22m[39m
+   [32m✓[39m buildClassifyPrompt[2m > [22m包含编号条目、参考类别与 JSON 格式约束[32m 7[2mms[22m[39m
+   [32m✓[39m parseClassifyResponse（三种形态兼容）[2m > [22mitems 形态[32m 3[2mms[22m[39m
+   [32m✓[39m parseClassifyResponse（三种形态兼容）[2m > [22mcategories 形态[32m 1[2mms[22m[39m
+   [32m✓[39m parseClassifyResponse（三种形态兼容）[2m > [22m裸数组与围栏/前后缀容错[32m 1[2mms[22m[39m
+   [32m✓[39m seedCategories / groupsFromAssignments[2m > [22m种子按频次取前 N[32m 1[2mms[22m[39m
+   [32m✓[39m seedCategories / groupsFromAssignments[2m > [22massignments 反推分组并按条目数降序[32m 1[2mms[22m[39m
+[31m   [31m×[31m 批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复[39m[32m 87[2mms[22m[39m
+[31m     → expected false to be true // Object.is equality[39m
+   [32m✓[39m 批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m僵尸解除：循环已死但状态仍 running 时，pause 直接落盘暂停态[32m 5[2mms[22m[39m
+npx : 
+所在位置 行:1 字符: 90
++ ... new($false); npx vitest run src/core/ai/classify.test.ts 2>&1 | Out-F ...
++                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/core/ai/classify.test.ts[2m > [22m批量分类暂停与断点（UI 合并后单一入口的回归）[2m > [22m暂停：cancelRequeste
+d 在批边界优雅停止并标记 paused，续跑从断点恢复
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m src/core/ai/classify.test.ts:[2m132:27[22m[39m
+    [90m130| [39m    [35mconst[39m again [33m=[39m [35mawait[39m [34mrunClassify[39m()
+    [90m131| [39m    console[33m.[39m[34mlog[39m([32m'[debug2] again='[39m[33m,[39m [33mJSON[39m[33m.[39m
+[34mstringify[39m(again))
+    [90m132| [39m    [34mexpect[39m(again[33m.[39mrunning)[33m.[39m[34mtoBe[39m([35mtrue[39m)
+    [90m   | [39m                          [31m^[39m
+    [90m133| [39m    [34mexpect[39m(again[33m.[39mbatch)[33m.[39m[34mtoBe[39m([34m1[39m)
+    [90m134| [39m    [35mlet[39m final2 [33m=[39m [35mawait[39m [34mgetClassifyState[39m()
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m7 passed[39m[22m[90m (8)[39m
+[2m   Start at [22m 18:17:18
+[2m   Duration [22m 1.02s[2m (transform 118ms, setup 0ms, collect 221ms, tests 106ms, environment 0ms, prepare 142ms)[22m
+

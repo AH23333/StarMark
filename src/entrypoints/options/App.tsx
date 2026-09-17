@@ -6,7 +6,6 @@ import { buildExport, exportFilename, type ExportFormat } from '~/core/export'
 import { getRules, saveRules, newRuleId, type RuleMatchType, type TagRule } from '~/core/rules'
 import { tagColor } from '~/core/tagcolor'
 import { DEFAULT_AI_SETTINGS, getAiSettings, saveAiSettings, listOllamaModels, type AiSettings, type ProviderKind } from '~/core/ai/provider'
-import type { AiPipelineState } from '~/core/ai/pipeline'
 import type { ClassifyResult, ClassifyState } from '~/core/ai/classify'
 import type { TagSuggestion } from '~/core/types'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
@@ -49,12 +48,10 @@ export default function App() {
   const [ruleTags, setRuleTags] = useState('')
   const [applyingRules, setApplyingRules] = useState(false)
 
-  /* ---------- AI 建议标签 ---------- */
+  /* ---------- AI 整理标签（批量分类，单一入口） ---------- */
   const [ai, setAi] = useState<AiSettings>({ ...DEFAULT_AI_SETTINGS })
-  const [aiState, setAiState] = useState<AiPipelineState | null>(null)
   const [aiPending, setAiPending] = useState<TagSuggestion[]>([])
   const [aiBusy, setAiBusy] = useState(false)
-  const [aiTitles, setAiTitles] = useState<Record<string, string>>({})
   const [classifyState, setClassifyState] = useState<ClassifyState | null>(null)
   const [classifyResult, setClassifyResult] = useState<ClassifyResult | null>(null)
   const [classifyBusy, setClassifyBusy] = useState(false)
@@ -63,11 +60,9 @@ export default function App() {
 
   const loadAi = useCallback(async () => {
     setAi(await getAiSettings())
+    // 仅取历史待审数量（旧版逐条建议的存量，用于清理入口）；流水线状态经 classify-state 获取
     const res = await sendToBackground({ type: 'ai-review' })
-    if (res.ok) {
-      setAiState(res.ai ?? null)
-      setAiPending(res.pending ?? [])
-    }
+    if (res.ok) setAiPending(res.pending ?? [])
     const cs = await sendToBackground({ type: 'ai-classify-state' })
     if (cs.ok) {
       setClassifyState(cs.classifyState ?? null)
@@ -93,45 +88,9 @@ export default function App() {
     }
   }
 
-  // AI 建议是后台长任务：ai-run 启动即返回（running=true），这里每 2s 轮询进度，
-  // running=false 时展示结果/错误。轮询期间每批进度（已扫描/已建议）实时刷新。
-  useEffect(() => {
-    if (!aiBusy) return
-    const timer = setInterval(async () => {
-      const res = await sendToBackground({ type: 'ai-review' })
-      if (!res.ok) return
-      setAiState(res.ai ?? null)
-      setAiPending(res.pending ?? [])
-      if (res.ai && !res.ai.running) {
-        setAiBusy(false)
-        if (res.ai.error) setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.ai.error }) })
-        else setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: res.ai.scanned ?? 0, suggested: res.ai.suggested ?? 0 }) })
-      }
-    }, 2000)
-    return () => clearInterval(timer)
-  }, [aiBusy, t])
-
-  const runAi = async () => {
-    setAiBusy(true)
-    const res = await sendToBackground({ type: 'ai-run' })
-    if (!res.ok) {
-      setAiBusy(false)
-      setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.error ?? '' }) })
-      return
-    }
-    setAiState(res.ai ?? null)
-    if (!res.ai?.running) {
-      // 启动即完成（无候选条目 / 配置错误被立刻发现）
-      setAiBusy(false)
-      if (res.ai?.error) setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.ai.error }) })
-      else setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: res.ai?.scanned ?? 0, suggested: res.ai?.suggested ?? 0 }) })
-    } else {
-      setMsg({ kind: 'ok', text: t('opt.ai.running') })
-    }
-  }
-
-  // 批量分类同样是后台长任务：ai-classify-run 启动即返回，轮询直到 running=false；
-  // 分类结果随每批落盘，轮询里一并刷新分组视图。
+  // 批量分类是后台长任务：ai-classify-run 启动即返回（running=true），每 2s 轮询直到
+  // running=false（完成 / 出错 / 用户暂停）。僵尸检测：running 但 lastBeatAt 超过
+  // 3 分钟无更新 → SW 已被浏览器回收，提示用户点击继续从断点恢复。
   useEffect(() => {
     if (!classifyBusy) return
     const timer = setInterval(async () => {
@@ -141,8 +100,17 @@ export default function App() {
       setClassifyResult(res.classifyResult ?? null)
       if (res.classifyState && !res.classifyState.running) {
         setClassifyBusy(false)
-        if (res.classifyState.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
+        if (res.classifyState.paused) setMsg({ kind: 'ok', text: t('opt.ai.clsPaused') })
+        else if (res.classifyState.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
         else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState.batch ?? 0 }) })
+        return
+      }
+      const beat = res.classifyState?.lastBeatAt ?? 0
+      if (Date.now() - beat > 180_000) {
+        setClassifyBusy(false)
+        // 心跳超时但状态仍是 running → SW 已被回收，落盘暂停态解除僵尸
+        await sendToBackground({ type: 'ai-pause' })
+        setMsg({ kind: 'err', text: t('opt.ai.clsStalled') })
       }
     }, 2000)
     return () => clearInterval(timer)
@@ -162,8 +130,29 @@ export default function App() {
       if (res.classifyState?.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
       else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState?.batch ?? 0 }) })
     } else {
-      setMsg({ kind: 'ok', text: t('opt.ai.clsRunning') })
+      setMsg({ kind: 'ok', text: res.classifyState.paused ? t('opt.ai.clsResuming') : t('opt.ai.clsRunning') })
     }
+  }
+
+  // 暂停：后台循环在下一批边界优雅停止并保留断点；循环已死（SW 回收）则直接落盘暂停态
+  const pauseClassifyNow = async () => {
+    const res = await sendToBackground({ type: 'ai-pause' })
+    if (res.ok) {
+      setClassifyState(res.classifyState ?? null)
+      if (!res.classifyState?.running) {
+        setClassifyBusy(false)
+        setMsg({ kind: 'ok', text: t('opt.ai.clsPaused') })
+      } else {
+        setMsg({ kind: 'ok', text: t('opt.ai.clsPausing') })
+      }
+    }
+  }
+
+  // 清空历史待审核建议（旧版逐条建议功能已并入批量分类，存量数据一次性清理）
+  const clearPending = async () => {
+    if (aiPending.length === 0) return
+    const res = await sendToBackground({ type: 'ai-reject', ids: aiPending.map((p) => p.id) })
+    if (res.ok) setAiPending(res.pending ?? [])
   }
 
   const applyGroups = async (tags: string[] | null) => {
@@ -206,15 +195,6 @@ export default function App() {
       setMsg({ kind: 'ok', text: t('opt.ai.clsImportOk') })
     } catch (e) {
       setMsg({ kind: 'err', text: t('opt.ai.clsImportFailed', { err: (e as Error).message }) })
-    }
-  }
-
-  const reviewAi = async (action: 'ai-approve' | 'ai-reject', ids: string[]) => {
-    if (ids.length === 0) return
-    const res = await sendToBackground({ type: action, ids })
-    if (res.ok) {
-      setAiPending(res.pending ?? [])
-      refresh()
     }
   }
 
@@ -290,19 +270,17 @@ export default function App() {
     return () => disposeTheme()
   }, [refresh, loadRules, loadAi])
 
-  // 待审建议的条目标题（批量补齐一次）
+  // 分类分组展示用的条目标题（批量补齐一次）
   useEffect(() => {
-    const ids = [...new Set(aiPending.map((p) => p.itemId))]
     const clsIds = classifyResult && classifyResult.assignments ? Object.keys(classifyResult.assignments) : []
-    if (ids.length === 0 && clsIds.length === 0) return
+    if (clsIds.length === 0) return
     void allItems().then((items) => {
       const map: Record<string, string> = {}
       for (const it of items) map[it.id] = it.title || it.url
-      setAiTitles(map)
       setClassifyTitles(map)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiPending, classifyResult])
+  }, [classifyResult])
 
   const saveToken = async () => {
     const pat = token.trim()
@@ -843,33 +821,18 @@ export default function App() {
           <div className="row">
             <button
               className="btn primary"
-              disabled={!ai.enabled || aiBusy || (ai.provider !== 'ollama' && !ai.apiKey)}
-              onClick={() => void runAi()}
-            >
-              {aiBusy ? t('opt.ai.running') : t('opt.ai.run')}
-            </button>
-            {ai.provider === 'ollama' && (
-              <button className="btn" disabled={aiBusy} onClick={() => void testOllama()}>
-                {t('opt.ai.testConn')}
-              </button>
-            )}
-            {aiState && (
-              <span className="ai-state">
-                {t('opt.ai.state', { scanned: aiState.scanned, suggested: aiState.suggested })}
-                {aiState.error ? ` · ${aiState.error}` : ''}
-              </span>
-            )}
-          </div>
-          <div className="row">
-            <button
-              className="btn primary"
               disabled={!ai.enabled || classifyBusy || (ai.provider !== 'ollama' && !ai.apiKey)}
               onClick={() => void runClassifyNow()}
             >
-              {classifyBusy ? t('opt.ai.clsRunning') : t('opt.ai.clsRun')}
+              {classifyBusy ? t('opt.ai.clsRunning') : classifyState?.paused ? t('opt.ai.clsResume') : t('opt.ai.clsRun')}
             </button>
+            {classifyBusy && (
+              <button className="btn danger-btn" onClick={() => void pauseClassifyNow()}>
+                {t('opt.ai.clsPause')}
+              </button>
+            )}
             {ai.provider === 'ollama' && (
-              <button className="btn" disabled={aiBusy} onClick={() => void testOllama()}>
+              <button className="btn" disabled={classifyBusy} onClick={() => void testOllama()}>
                 {t('opt.ai.testConn')}
               </button>
             )}
@@ -878,6 +841,7 @@ export default function App() {
                 {classifyState.running
                   ? t('opt.ai.clsProgress', { batch: classifyState.batch, total: classifyState.totalBatches })
                   : t('opt.ai.clsState', { batch: classifyState.batch, total: classifyState.totalBatches })}
+                {classifyState.paused ? ` · ${t('opt.ai.clsPausedShort')}` : ''}
                 {classifyState.error ? ` · ${classifyState.error}` : ''}
               </span>
             )}
@@ -935,28 +899,12 @@ export default function App() {
         )}
 
         {aiPending.length > 0 && (
-          <>
-            <h3 className="sub-title">{t('opt.ai.pendingHeading', { n: aiPending.length })}</h3>
-            <div className="row">
-              <button className="btn" onClick={() => void reviewAi('ai-approve', aiPending.map((p) => p.id))}>
-                {t('opt.ai.approveAll')}
-              </button>
-              <button className="btn danger-btn" onClick={() => void reviewAi('ai-reject', aiPending.map((p) => p.id))}>
-                {t('opt.ai.rejectAll')}
-              </button>
-            </div>
-            <ul className="ai-pending">
-              {aiPending.map((p) => (
-                <li key={p.id} className="ai-pending-row">
-                  <span className="ai-pending-title">{aiTitles[p.itemId] ?? p.itemId}</span>
-                  <span className="rule-badge">#{p.tag}</span>
-                  <span className="spacer" />
-                  <button className="btn mini" title={t('opt.ai.approve')} onClick={() => void reviewAi('ai-approve', [p.id])}>✓</button>
-                  <button className="btn mini danger-btn" title={t('opt.ai.reject')} onClick={() => void reviewAi('ai-reject', [p.id])}>✕</button>
-                </li>
-              ))}
-            </ul>
-          </>
+          <div className="row">
+            <span className="ai-state">{t('opt.ai.pendingCleanup', { n: aiPending.length })}</span>
+            <button className="btn mini" onClick={() => void clearPending()}>
+              {t('opt.ai.pendingClear')}
+            </button>
+          </div>
         )}
       </section>
 

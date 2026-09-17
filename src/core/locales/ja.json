@@ -257,9 +257,9 @@
   "convert.toStar.ok": "スターを付けました",
   "convert.failed": "変換失敗：{err}",
   "opt.ai.heading": "AI タグ候補（BYOK）",
-  "opt.ai.desc": "自分の LLM API キーでタグ候補を生成。「保留中」リストに入り、承認後に正式なタグになります。既定はオフ。",
+  "opt.ai.desc": "自分の LLM で全項目のタグを一括整理：50 件ずつモデルに送ってグループ化（既存タグを優先再利用）。完了後グループごとにプレビューし、個別または全グループを適用できます。ローカル Ollama モードではデータは端末外に出ません。",
   "opt.ai.privacy": "有効にすると、項目のタイトル・説明・メモが設定したプロバイダーに送信されます（ローカルモデル Ollama 選択時は端末外に出ません）。キーはローカルのみに保存。",
-  "opt.ai.clsRun": "分類候補を生成",
+  "opt.ai.clsRun": "AI 整理を開始",
   "opt.ai.clsRunning": "分類中…（バッチ毎に保存、ページを閉じても可）",
   "opt.ai.clsProgress": "分類中：{batch}/{total} バッチ",
   "opt.ai.clsState": "完了 {batch}/{total} バッチ",
@@ -298,5 +298,14 @@
   "opt.ai.rejectAll": "すべて却下",
   "opt.ai.approve": "承認",
   "opt.ai.reject": "却下",
-  "opt.ai.ollamaHint": "Ollama 接続チェック：1) サービス起動を確認（ollama serve）；2) 403 が出る場合は Ollama 再起動前に環境変数 OLLAMA_ORIGINS=\"*\" を設定（拡張のオリジンは既定の許可リスト外。拡張側で Origin ヘッダー削除を自動試行、通常は不要）；3) モデル名は ollama list の表示と一致させ、初回は ollama pull を実行。"
+  "opt.ai.ollamaHint": "Ollama 接続チェック：1) サービス起動を確認（ollama serve）；2) 403 が出る場合は Ollama 再起動前に環境変数 OLLAMA_ORIGINS=\"*\" を設定（拡張のオリジンは既定の許可リスト外。拡張側で Origin ヘッダー削除を自動試行、通常は不要）；3) モデル名は ollama list の表示と一致させ、初回は ollama pull を実行。",
+  "opt.ai.clsResume": "整理を続ける",
+  "opt.ai.clsPause": "一時停止",
+  "opt.ai.clsPausing": "一時停止中…（現在のバッチ完了後に停止）",
+  "opt.ai.clsPaused": "一時停止しました —— 「AI 整理を続ける」で中断箇所から再開できます",
+  "opt.ai.clsPausedShort": "一時停止中",
+  "opt.ai.clsResuming": "中断箇所から再開中…",
+  "opt.ai.clsStalled": "タスクが中断された可能性があります（ハートビートタイムアウト）。「AI 整理を続ける」で再開できます",
+  "opt.ai.pendingCleanup": "旧バージョンのレビュー待ち提案が {n} 件あります",
+  "opt.ai.pendingClear": "クリア"
 }

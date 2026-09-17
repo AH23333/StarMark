@@ -257,9 +257,9 @@
   "convert.toStar.ok": "已加 Star",
   "convert.failed": "互转失败：{err}",
   "opt.ai.heading": "AI 建议标签（BYOK）",
-  "opt.ai.desc": "用你自己的 LLM API Key 为条目生成标签建议；建议先进入「待审核」列表，批准后才并入条目标签。默认关闭。",
+  "opt.ai.desc": "用你自己的 LLM 批量整理全部条目的标签：50 条/批送模型分组（优先复用现有标签），完成后按组预览，可应用单个分组或全部分组。本地 Ollama 模式数据不出本机。",
   "opt.ai.privacy": "开启后，条目标题/描述/备注会发送到你配置的服务商（选本地模型 Ollama 时不离开本机）。Key 仅存本地。",
-  "opt.ai.clsRun": "生成分类建议",
+  "opt.ai.clsRun": "开始 AI 整理",
   "opt.ai.clsRunning": "分类中…（每批落盘，可关闭页面）",
   "opt.ai.clsProgress": "分类中：第 {batch}/{total} 批",
   "opt.ai.clsState": "已完成 {batch}/{total} 批",
@@ -298,5 +298,14 @@
   "opt.ai.rejectAll": "全部拒绝",
   "opt.ai.approve": "批准",
   "opt.ai.reject": "拒绝",
-  "opt.ai.ollamaHint": "Ollama 连接排查：1) 确认服务已启动（ollama serve）；2) 若提示 403，重启 Ollama 前设置环境变量 OLLAMA_ORIGINS=\"*\" —— 扩展来源不在 Ollama 默认白名单（扩展已自动尝试移除 Origin 头，通常无需此步）；3) 模型名需与 ollama list 输出一致，首次使用先 ollama pull。"
+  "opt.ai.ollamaHint": "Ollama 连接排查：1) 确认服务已启动（ollama serve）；2) 若提示 403，重启 Ollama 前设置环境变量 OLLAMA_ORIGINS=\"*\" —— 扩展来源不在 Ollama 默认白名单（扩展已自动尝试移除 Origin 头，通常无需此步）；3) 模型名需与 ollama list 输出一致，首次使用先 ollama pull。",
+  "opt.ai.clsResume": "继续整理",
+  "opt.ai.clsPause": "暂停",
+  "opt.ai.clsPausing": "正在暂停…（当前批完成后在批边界停止）",
+  "opt.ai.clsPaused": "已暂停 —— 再次点击「继续整理」从断点恢复",
+  "opt.ai.clsPausedShort": "已暂停",
+  "opt.ai.clsResuming": "正在从断点继续…",
+  "opt.ai.clsStalled": "任务疑似被浏览器中断（心跳超时）。点击「继续整理」可从断点恢复",
+  "opt.ai.pendingCleanup": "检测到历史待审核建议 {n} 条（旧版逐条建议功能）",
+  "opt.ai.pendingClear": "清空"
 }

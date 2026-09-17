@@ -257,9 +257,9 @@
   "convert.toStar.ok": "Starred",
   "convert.failed": "Convert failed: {err}",
   "opt.ai.heading": "AI tag suggestions (BYOK)",
-  "opt.ai.desc": "Use your own LLM API key to generate tag suggestions. Suggestions go to a review list first; only approved ones merge into items. Off by default.",
+  "opt.ai.desc": "Batch-organize tags for all items with your own LLM: 50 items per batch (reusing existing tags first). Preview groups when done and apply single groups or all. Local Ollama mode never sends data off your machine.",
   "opt.ai.privacy": "When enabled, item titles/descriptions/notes are sent to the configured provider (local models via Ollama never leave your machine). Keys stay local.",
-  "opt.ai.clsRun": "Generate classification",
+  "opt.ai.clsRun": "Start AI Organize",
   "opt.ai.clsRunning": "Classifying… (checkpointed per batch, safe to close)",
   "opt.ai.clsProgress": "Classifying: batch {batch}/{total}",
   "opt.ai.clsState": "Done {batch}/{total} batches",
@@ -298,5 +298,14 @@
   "opt.ai.rejectAll": "Reject all",
   "opt.ai.approve": "Approve",
   "opt.ai.reject": "Reject",
-  "opt.ai.ollamaHint": "Ollama troubleshooting: 1) make sure the server is running (ollama serve); 2) if you see 403, set the env var OLLAMA_ORIGINS=\"*\" before restarting Ollama — the extension origin is not in Ollama's default allowlist (the extension already strips the Origin header automatically, usually unnecessary); 3) the model name must match ollama list, run ollama pull first."
+  "opt.ai.ollamaHint": "Ollama troubleshooting: 1) make sure the server is running (ollama serve); 2) if you see 403, set the env var OLLAMA_ORIGINS=\"*\" before restarting Ollama — the extension origin is not in Ollama's default allowlist (the extension already strips the Origin header automatically, usually unnecessary); 3) the model name must match ollama list, run ollama pull first.",
+  "opt.ai.clsResume": "Resume Organize",
+  "opt.ai.clsPause": "Pause",
+  "opt.ai.clsPausing": "Pausing… (stops at the next batch boundary)",
+  "opt.ai.clsPaused": "Paused — click \"Resume Organize\" to continue from the checkpoint",
+  "opt.ai.clsPausedShort": "paused",
+  "opt.ai.clsResuming": "Resuming from checkpoint…",
+  "opt.ai.clsStalled": "Task appears to have been interrupted by the browser (heartbeat timeout). Click \"Resume Organize\" to continue",
+  "opt.ai.pendingCleanup": "Found {n} legacy suggestions awaiting review (from the old per-item feature)",
+  "opt.ai.pendingClear": "Clear"
 }

@@ -27,7 +27,10 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   ollamaBaseUrl: '',
 }
 
-const AI_KEY = '***'
+// 注意：storage key 必须是稳定且互不冲突的真实字面量。
+// 曾经四个模块的 key 全部被写成占位符 '***' —— AI 设置 / 建议流水线 / 分类结果 /
+// 分类状态互相覆盖（第一批分类跑完就冲掉 AI 设置 → "AI 未启用"），此处修复并留档。
+export const AI_KEY = 'ai.settings'
 
 export async function getAiSettings(): Promise<AiSettings> {
   const s = await browser.storage.local.get(AI_KEY)
@@ -64,6 +67,43 @@ export async function suggestTagsViaAi(settings: AiSettings, prompt: string): Pr
   return parseTagsJson(content)
 }
 
+/**
+ * 长请求保活（修复"生成中卡住"）：MV3 SW 的 idle 计时器（约 30s）只被**扩展 API 调用**
+ * 重置，fetch 挂起不算活动 —— 本地模型推理一批可达数十秒甚至数分钟，期间无任何扩展
+ * API 调用，SW 会被浏览器回收，任务死在中途而状态停留在 running=true（UI 永远"生成中"）。
+ * 在请求等待期间每 20s 做一次无害的 storage 读取，持续重置 idle 计时器。
+ */
+export async function keepAliveDuring<T>(p: Promise<T>): Promise<T> {
+  let done = false
+  let wake: () => void = () => undefined
+  const sleeper = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 20_000)
+      wake = () => {
+        clearTimeout(t)
+        resolve()
+      }
+    })
+  const beat = (async () => {
+    while (!done) {
+      try {
+        await browser.storage.local.get('_keepalive')
+      } catch {
+        return // storage 不可用（测试 mock 精简环境）时放弃保活，不干扰主请求
+      }
+      if (done) return
+      await sleeper()
+    }
+  })()
+  try {
+    return await p
+  } finally {
+    done = true
+    wake() // 主请求结束后立即唤醒心跳（否则要等满 20s 才退出）
+    await beat
+  }
+}
+
 /** 解析模型输出：容忍代码围栏/前后缀文本，只取第一个 JSON 数组。 */
 export function parseTagsJson(raw: string): string[] {
   const text = raw.replace(/```(?:json)?/gi, '')
@@ -83,9 +123,10 @@ export function parseTagsJson(raw: string): string[] {
 }
 
 async function chat(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
-  if (settings.provider === 'anthropic') return chatAnthropic(settings, prompt)
-  if (settings.provider === 'ollama') return chatOllama(settings, prompt, jsonMode)
-  return chatOpenAiCompatible(settings, prompt, jsonMode)
+  // 三个 Provider 的请求统一挂心跳：推理期间持续重置 SW idle 计时器（§10 保活）
+  if (settings.provider === 'anthropic') return keepAliveDuring(chatAnthropic(settings, prompt))
+  if (settings.provider === 'ollama') return keepAliveDuring(chatOllama(settings, prompt, jsonMode))
+  return keepAliveDuring(chatOpenAiCompatible(settings, prompt, jsonMode))
 }
 
 /** 强制 JSON 输出的对话（批量分类用；Ollama 走 format:json，OpenAI 走 response_format）。 */

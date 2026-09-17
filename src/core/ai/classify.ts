@@ -36,10 +36,16 @@ export interface ClassifyState {
   error?: string
   startedAt?: number
   doneAt?: number
+  /** 最近一次进展心跳（每批开始前更新）；UI 据此判定任务是否已被 SW 回收（僵尸） */
+  lastBeatAt?: number
+  /** 暂停请求：处理循环在下一批边界优雅停止 */
+  cancelRequested?: boolean
+  /** 已暂停（区别于完成/出错）：再次触发从 batch 断点继续 */
+  paused?: boolean
 }
 
-const RESULT_KEY = '***'
-const STATE_KEY = '***'
+const RESULT_KEY = 'ai.classify.result'
+const STATE_KEY = 'ai.classify.state'
 
 export const CLASSIFY_BATCH_SIZE = 50
 export const CLASSIFY_MAX_BATCHES = 40
@@ -72,6 +78,9 @@ export async function getClassifyState(): Promise<ClassifyState> {
 async function setClassifyState(st: ClassifyState): Promise<void> {
   await setSyncState(STATE_KEY, st)
 }
+
+/** 测试与僵尸恢复入口：直接写分类状态 */
+export { setClassifyState }
 
 /** 分类种子：现有标签按频次取前 N（锚定适中颗粒度，让模型优先复用） */
 export function seedCategories(items: StarItem[], max = 8): string[] {
@@ -191,35 +200,78 @@ async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
   return mod.chatJson(settings, prompt)
 }
 
-/** 消息入口改为"启动即返回"后防止重复触发并发跑两个循环（SW 会话内存态） */
+/** 运行标志：运行中重复触发立即返回当前状态，不并发跑两个循环（SW 会话内存态） */
 let classifyActive = false
+/**
+ * 运行中循环持有的共享 state 引用（模块级单例）。**内存态是唯一事实来源**：
+ * pauseClassify 改这里才能让循环在批边界看到 cancelRequested —— 若只写 storage，
+ * 循环闭包里的对象不会更新，暂停信号永远到不了循环（测试曾抓出此 bug）。
+ * storage 是该对象的持久化镜像（供 UI 轮询与 SW 重启恢复）。
+ */
+let activeState: ClassifyState | null = null
 
 /**
  * 启动/续跑批量分类：**同步建立 running 状态并落盘后立即返回**，批处理循环在后台
  * promise 中继续（消息通道不挂起；每批的 storage 写入持续保活 SW）。
  * 进度经 ai-classify-state 轮询。旧实现同步等待全部批次完成 —— 本地 Ollama 下
  * 消息通道随 SW 生命周期终止而失效，报 "message channel closed"。
+ * 续跑语义：paused（用户暂停）或 SW 回收（僵尸 running）都从 batch 断点继续；
+ * 仅已完成（doneAt 且非 paused）的任务重新触发才从头开始。
  */
 export async function runClassify(): Promise<ClassifyState> {
   if (classifyActive) return getClassifyState()
   const settings = await getAiSettings()
-  let state = await getClassifyState()
+  const prev = await getClassifyState()
   if (!isAiConfigured(settings)) {
-    state = { ...state, running: false, error: 'AI 未启用或未配置 Key' }
+    const state: ClassifyState = { ...prev, running: false, error: 'AI 未启用或未配置 Key' }
     await setClassifyState(state)
     return state
   }
-  if (!state.running) {
-    state = { running: true, batch: 0, totalBatches: 0, classified: 0, startedAt: Date.now() }
-    await setClassifyState(state)
+  const resume = prev.running || Boolean(prev.paused)
+  const state: ClassifyState = {
+    running: true,
+    batch: resume ? prev.batch : 0,
+    totalBatches: 0,
+    classified: resume ? prev.classified : 0,
+    startedAt: Date.now(),
+    cancelRequested: false,
+    paused: false,
+    error: undefined,
   }
+  await setClassifyState(state)
   classifyActive = true
+  activeState = state
   void runClassifyLoop(settings, state)
     .catch((e) => console.warn('[starmark] ai classify crashed', e))
     .finally(() => {
       classifyActive = false
+      activeState = null
     })
   return state
+}
+
+/**
+ * 请求暂停：循环存活时修改共享 state 的 cancelRequested，由循环在下一批边界优雅停止
+ * （保留 batch 断点）；循环已死（SW 回收后的僵尸 running）则直接落盘暂停态。
+ */
+export async function pauseClassify(): Promise<ClassifyState> {
+  if (classifyActive && activeState) {
+    activeState.cancelRequested = true
+    activeState.lastBeatAt = Date.now()
+    await setClassifyState(activeState)
+    return { ...activeState }
+  }
+  const state = await getClassifyState()
+  if (!state.running) return state
+  const stopped: ClassifyState = {
+    ...state,
+    running: false,
+    paused: true,
+    cancelRequested: false,
+    doneAt: Date.now(),
+  }
+  await setClassifyState(stopped)
+  return stopped
 }
 
 async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Promise<void> {
@@ -227,6 +279,7 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
     const items = (await allItems()).filter((i) => !i.hidden)
     const batches = chunk(items, CLASSIFY_BATCH_SIZE).slice(0, CLASSIFY_MAX_BATCHES)
     state.totalBatches = batches.length
+    state.lastBeatAt = Date.now()
     await setClassifyState(state)
 
     const seeds = seedCategories(items)
@@ -242,6 +295,17 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
     result.totalItems = items.length
 
     for (let bi = state.batch; bi < batches.length; bi++) {
+      // 暂停：批边界优雅停止，保留 batch 断点（paused 态，再次触发从 bi 继续）
+      if (state.cancelRequested) {
+        state.running = false
+        state.paused = true
+        state.cancelRequested = false
+        state.doneAt = Date.now()
+        state.lastBeatAt = Date.now()
+        await setClassifyState(state)
+        return
+      }
+      state.lastBeatAt = Date.now()
       const batchItems = batches[bi]!
       const idByIndex = new Map<number, string>()
       const inputs: ClassifyBatchInput[] = batchItems.map((it, i) => {
@@ -256,6 +320,7 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
         state.running = false
         state.error = (e as Error).message
         state.doneAt = Date.now()
+        state.lastBeatAt = Date.now()
         await setClassifyState(state)
         return
       }
@@ -276,11 +341,13 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
     state.running = false
     state.doneAt = Date.now()
     state.error = undefined
+    state.lastBeatAt = Date.now()
     await setClassifyState(state)
   } catch (e) {
     state.running = false
     state.error = (e as Error).message
     state.doneAt = Date.now()
+    state.lastBeatAt = Date.now()
     await setClassifyState(state)
   }
 }

@@ -11,7 +11,7 @@ import type { TagSuggestion } from '../types'
  * 产物只进「建议桶」（suggestions 表，status=pending），用户批准后才并入 items.tags。
  */
 
-const PIPELINE_KEY = '***'
+const PIPELINE_KEY = 'ai.pipeline.state'
 
 export interface AiPipelineState {
   running: boolean
