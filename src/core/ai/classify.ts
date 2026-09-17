@@ -1,7 +1,7 @@
 ﻿import { browser } from 'wxt/browser'
 import { allItems, getSyncState, setSyncState, updateItem } from '../db'
 import { bumpIndexVersion } from '../version'
-import { getAiSettings, type AiSettings } from './provider'
+import { getAiSettings, isAiConfigured, type AiSettings } from './provider'
 import type { StarItem } from '../types'
 
 /**
@@ -191,11 +191,24 @@ async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
   return mod.chatJson(settings, prompt)
 }
 
+/** 消息入口改为"启动即返回"后防止重复触发并发跑两个循环（SW 会话内存态） */
+let classifyActive = false
+
 /** 启动/续跑批量分类。SW 消息入口只负责触发；进度经 ai-classify-state 轮询。 */
 export async function runClassify(): Promise<ClassifyState> {
+  if (classifyActive) return getClassifyState()
+  classifyActive = true
+  try {
+    return await runClassifyInner()
+  } finally {
+    classifyActive = false
+  }
+}
+
+async function runClassifyInner(): Promise<ClassifyState> {
   const settings = await getAiSettings()
   let state = await getClassifyState()
-  if (!settings.enabled || (settings.provider !== 'ollama' && !settings.apiKey)) {
+  if (!isAiConfigured(settings)) {
     state = { ...state, running: false, error: 'AI 未启用或未配置 Key' }
     await setClassifyState(state)
     return state

@@ -200,4 +200,35 @@ describe('建议桶流水线（fetch mock）', () => {
     expect(state.error).toContain('API Key')
     expect(state.running).toBe(false)
   })
+
+  it('防重入：后台运行中重复触发立即返回当前状态，不并发跑两个循环（消息改启动即返回的回归）', async () => {
+    await upsertItems([
+      item('a', 'o/a', { updatedAt: 3000 }),
+      item('b', 'o/b', { updatedAt: 2000 }),
+    ])
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
+
+    // 模拟慢推理：第一条请求挂起直到放行
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      await gate
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '["t1"]' } }] }) }
+    }))
+
+    const first = runAiSuggestPipeline() // 后台运行，卡在第一条
+    await new Promise((r) => setTimeout(r, 50))
+    const second = await runAiSuggestPipeline() // 防重入：立即返回当前状态
+    expect(second.running).toBe(true)
+    expect(second.cursor).toBeLessThanOrEqual(2)
+
+    release()
+    const done = await first
+    expect(done.running).toBe(false)
+    // 若无防护，第二次触发会并发处理同样的条目 → fetch 次数翻倍
+    expect(call).toBe(2)
+    expect(done.suggested).toBe(2)
+  })
 })

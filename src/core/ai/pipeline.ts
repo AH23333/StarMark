@@ -34,8 +34,21 @@ async function setPipeline(state: AiPipelineState): Promise<void> {
 
 const PAGE_SIZE = 10
 
+/** 消息入口改为"启动即返回"后防止重复触发并发跑两个循环（SW 会话内存态） */
+let pipelineActive = false
+
 /** 启动/续跑流水线；最多处理 maxItems 条后让出（避免占满 SW 生命周期），无未完成则重开。 */
 export async function runAiSuggestPipeline(maxItems = 30): Promise<AiPipelineState> {
+  if (pipelineActive) return getAiPipelineState()
+  pipelineActive = true
+  try {
+    return await runPipelineInner(maxItems)
+  } finally {
+    pipelineActive = false
+  }
+}
+
+async function runPipelineInner(maxItems: number): Promise<AiPipelineState> {
   const settings = await getAiSettings()
   let state = await getAiPipelineState()
   // 入口检查统一走 isAiConfigured：Ollama 是本地服务免 API Key，

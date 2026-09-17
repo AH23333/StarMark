@@ -93,41 +93,77 @@ export default function App() {
     }
   }
 
+  // AI 建议是后台长任务：ai-run 启动即返回（running=true），这里每 2s 轮询进度，
+  // running=false 时展示结果/错误。轮询期间每批进度（已扫描/已建议）实时刷新。
+  useEffect(() => {
+    if (!aiBusy) return
+    const timer = setInterval(async () => {
+      const res = await sendToBackground({ type: 'ai-review' })
+      if (!res.ok) return
+      setAiState(res.ai ?? null)
+      setAiPending(res.pending ?? [])
+      if (res.ai && !res.ai.running) {
+        setAiBusy(false)
+        if (res.ai.error) setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.ai.error }) })
+        else setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: res.ai.scanned ?? 0, suggested: res.ai.suggested ?? 0 }) })
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [aiBusy, t])
+
   const runAi = async () => {
     setAiBusy(true)
-    setMsg({ kind: 'ok', text: t('opt.ai.running') })
     const res = await sendToBackground({ type: 'ai-run' })
-    setAiBusy(false)
     if (!res.ok) {
+      setAiBusy(false)
       setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.error ?? '' }) })
       return
     }
     setAiState(res.ai ?? null)
-    const review = await sendToBackground({ type: 'ai-review' })
-    if (review.ok) {
-      setAiState(review.ai ?? null)
-      setAiPending(review.pending ?? [])
-      setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: review.ai?.scanned ?? 0, suggested: review.ai?.suggested ?? 0 }) })
+    if (!res.ai?.running) {
+      // 启动即完成（无候选条目 / 配置错误被立刻发现）
+      setAiBusy(false)
+      if (res.ai?.error) setMsg({ kind: 'err', text: t('opt.ai.runFailed', { err: res.ai.error }) })
+      else setMsg({ kind: 'ok', text: t('opt.ai.done', { scanned: res.ai?.scanned ?? 0, suggested: res.ai?.suggested ?? 0 }) })
+    } else {
+      setMsg({ kind: 'ok', text: t('opt.ai.running') })
     }
   }
 
+  // 批量分类同样是后台长任务：ai-classify-run 启动即返回，轮询直到 running=false；
+  // 分类结果随每批落盘，轮询里一并刷新分组视图。
+  useEffect(() => {
+    if (!classifyBusy) return
+    const timer = setInterval(async () => {
+      const res = await sendToBackground({ type: 'ai-classify-state' })
+      if (!res.ok) return
+      setClassifyState(res.classifyState ?? null)
+      setClassifyResult(res.classifyResult ?? null)
+      if (res.classifyState && !res.classifyState.running) {
+        setClassifyBusy(false)
+        if (res.classifyState.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
+        else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState.batch ?? 0 }) })
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [classifyBusy, t])
+
   const runClassifyNow = async () => {
     setClassifyBusy(true)
-    setMsg({ kind: 'ok', text: t('opt.ai.clsRunning') })
     const res = await sendToBackground({ type: 'ai-classify-run' })
-    setClassifyBusy(false)
     if (!res.ok) {
+      setClassifyBusy(false)
       setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.error ?? '' }) })
       return
     }
     setClassifyState(res.classifyState ?? null)
-    const st = await sendToBackground({ type: 'ai-classify-state' })
-    if (st.ok) {
-      setClassifyState(st.classifyState ?? null)
-      setClassifyResult(st.classifyResult ?? null)
+    if (!res.classifyState?.running) {
+      setClassifyBusy(false)
+      if (res.classifyState?.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
+      else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState?.batch ?? 0 }) })
+    } else {
+      setMsg({ kind: 'ok', text: t('opt.ai.clsRunning') })
     }
-    if (res.classifyState?.error) setMsg({ kind: 'err', text: t('opt.ai.clsRunFailed', { err: res.classifyState.error }) })
-    else setMsg({ kind: 'ok', text: t('opt.ai.clsDone', { batches: res.classifyState?.batch ?? 0 }) })
   }
 
   const applyGroups = async (tags: string[] | null) => {
