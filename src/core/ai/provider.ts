@@ -122,19 +122,23 @@ export function parseTagsJson(raw: string): string[] {
   }
 }
 
-async function chat(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
-  // 三个 Provider 的请求统一挂心跳：推理期间持续重置 SW idle 计时器（§10 保活）
-  if (settings.provider === 'anthropic') return keepAliveDuring(chatAnthropic(settings, prompt))
-  if (settings.provider === 'ollama') return keepAliveDuring(chatOllama(settings, prompt, jsonMode))
-  return keepAliveDuring(chatOpenAiCompatible(settings, prompt, jsonMode))
+/**
+ * 统一 chat 入口（全 Provider 挂心跳 + 可选中止信号）。
+ * signal 用于"暂停/停止"：abort 后 fetch 立即断开，本地 Ollama 检测到客户端断开
+ * 会停止当前推理（不再把整批算完）。
+ */
+async function chat(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
+  if (settings.provider === 'anthropic') return keepAliveDuring(chatAnthropic(settings, prompt, signal))
+  if (settings.provider === 'ollama') return keepAliveDuring(chatOllama(settings, prompt, jsonMode, signal))
+  return keepAliveDuring(chatOpenAiCompatible(settings, prompt, jsonMode, signal))
 }
 
 /** 强制 JSON 输出的对话（批量分类用；Ollama 走 format:json，OpenAI 走 response_format）。 */
-export async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
-  return chat(settings, prompt, true)
+export async function chatJson(settings: AiSettings, prompt: string, signal?: AbortSignal): Promise<string> {
+  return chat(settings, prompt, true, signal)
 }
 
-async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
+async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
   const base = (settings.baseUrl?.trim() || 'https://api.openai.com/v1').replace(/\/$/, '')
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -142,6 +146,7 @@ async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMo
       'Content-Type': 'application/json',
       Authorization: `Bearer ${settings.apiKey}`,
     },
+    signal,
     body: JSON.stringify({
       model: settings.model,
       messages: [{ role: 'user', content: prompt }],
@@ -158,7 +163,7 @@ async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMo
   return data.choices?.[0]?.message?.content ?? ''
 }
 
-async function chatAnthropic(settings: AiSettings, prompt: string): Promise<string> {
+async function chatAnthropic(settings: AiSettings, prompt: string, signal?: AbortSignal): Promise<string> {
   const base = (settings.baseUrl?.trim() || 'https://api.anthropic.com').replace(/\/$/, '')
   const res = await fetch(`${base}/v1/messages`, {
     method: 'POST',
@@ -167,6 +172,7 @@ async function chatAnthropic(settings: AiSettings, prompt: string): Promise<stri
       'x-api-key': settings.apiKey,
       'anthropic-version': '2023-06-01',
     },
+    signal,
     body: JSON.stringify({
       model: settings.model || 'claude-3-5-haiku-latest',
       max_tokens: 200,
@@ -259,13 +265,14 @@ function ollamaOriginHint(): string {
   ].join('\n')
 }
 
-async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
+async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
   const base = await ollamaBaseUrlOf(settings)
   let res: Response
   try {
     res = await fetch(`${base}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal,
       body: JSON.stringify({
         model: settings.model || 'llama3.2',
         messages: [{ role: 'user', content: prompt }],
@@ -275,6 +282,8 @@ async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false
       }),
     })
   } catch (e) {
+    // 用户主动中止（暂停）：原样透传 AbortError，让上层按"优雅停止"处理
+    if ((e as Error).name === 'AbortError') throw e
     // fetch 层失败（连接拒绝 / IPv6 歧义 / 浏览器策略拦截）：给可操作的上下文
     throw new Error(`无法连接本地 Ollama（${base}）：${(e as Error).message}。请确认已运行 ollama serve，且地址/端口正确`)
   }

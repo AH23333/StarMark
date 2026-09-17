@@ -1,4 +1,4 @@
-﻿import { browser } from 'wxt/browser'
+import { browser } from 'wxt/browser'
 import { allItems, getSyncState, setSyncState, updateItem } from '../db'
 import { bumpIndexVersion } from '../version'
 import { getAiSettings, isAiConfigured, type AiSettings } from './provider'
@@ -194,10 +194,10 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out
 }
 
-async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
+async function chatJson(settings: AiSettings, prompt: string, signal?: AbortSignal): Promise<string> {
   // 动态引 provider，避免打包循环依赖
   const mod = await import('./provider')
-  return mod.chatJson(settings, prompt)
+  return mod.chatJson(settings, prompt, signal)
 }
 
 /** 运行标志：运行中重复触发立即返回当前状态，不并发跑两个循环（SW 会话内存态） */
@@ -209,6 +209,8 @@ let classifyActive = false
  * storage 是该对象的持久化镜像（供 UI 轮询与 SW 重启恢复）。
  */
 let activeState: ClassifyState | null = null
+/** 当前批次请求的中止控制器：暂停时 abort 立即切断 HTTP 连接，本地 Ollama 检测到客户端断开会停止推理 */
+let classifyAbort: AbortController | null = null
 
 /**
  * 启动/续跑批量分类：**同步建立 running 状态并落盘后立即返回**，批处理循环在后台
@@ -251,15 +253,26 @@ export async function runClassify(): Promise<ClassifyState> {
 }
 
 /**
- * 请求暂停：循环存活时修改共享 state 的 cancelRequested，由循环在下一批边界优雅停止
- * （保留 batch 断点）；循环已死（SW 回收后的僵尸 running）则直接落盘暂停态。
+ * 请求暂停：设置 cancelRequested 并**立即 abort 当前批次的请求**（本地 Ollama 检测到
+ * 客户端断开会停止推理），然后等待循环在批边界/中断点落盘暂停态（最多 ~2s）后返回。
+ * **本函数自己不写状态** —— 落盘由循环统一完成，避免双写竞态（两个 put 完成顺序
+ * 不确定，后完成者会覆盖前者的 paused 标志，测试曾抓出）。
+ * 循环已死（SW 回收后的僵尸 running）则直接落盘暂停态解除 UI 等待。
  */
 export async function pauseClassify(): Promise<ClassifyState> {
   if (classifyActive && activeState) {
-    activeState.cancelRequested = true
-    activeState.lastBeatAt = Date.now()
-    await setClassifyState(activeState)
-    return { ...activeState }
+    if (!activeState.cancelRequested) {
+      activeState.cancelRequested = true
+      activeState.lastBeatAt = Date.now()
+      classifyAbort?.abort()
+      // 等待循环识别暂停并落盘（abort 路径毫秒级；批边界路径最多一个批次间隙）。
+      // 注意循环结束时 finally 会把 activeState 置 null，读取必须用可选链。
+      for (let i = 0; i < 100 && activeState?.running && classifyActive; i++) {
+        await new Promise((r) => setTimeout(r, 20))
+      }
+    }
+    // 循环可能恰好在此期间结束（activeState 已置 null）→ 最终态以 storage 为准
+    return activeState ? { ...activeState } : await getClassifyState()
   }
   const state = await getClassifyState()
   if (!state.running) return state
@@ -313,16 +326,29 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
         return { index: i + 1, id: it.id, title: it.title || it.url, desc: it.description }
       })
       let tagsById: Map<string, string[]> | undefined
+      classifyAbort = new AbortController()
       try {
-        const raw = await chatJson(settings, buildClassifyPrompt(inputs, seeds))
+        const raw = await chatJson(settings, buildClassifyPrompt(inputs, seeds), classifyAbort.signal)
         tagsById = parseClassifyResponse(raw, idByIndex)
       } catch (e) {
+        // 暂停触发的中止：优雅落盘暂停态（不是错误）
+        if (state.cancelRequested && (e as Error).name === 'AbortError') {
+          state.running = false
+          state.paused = true
+          state.cancelRequested = false
+          state.doneAt = Date.now()
+          state.lastBeatAt = Date.now()
+          await setClassifyState(state)
+          return
+        }
         state.running = false
         state.error = (e as Error).message
         state.doneAt = Date.now()
         state.lastBeatAt = Date.now()
         await setClassifyState(state)
         return
+      } finally {
+        classifyAbort = null
       }
       if (tagsById) {
         for (const [id, tags] of tagsById) result.assignments[id] = tags

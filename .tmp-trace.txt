@@ -1,0 +1,4 @@
+read1={"running":false,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789643664849,"cancelRequested":false,"paused":true,"lastBeatAt":1789643664876,"doneAt":1789643664876}
+read1={"running":false,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789643695705,"cancelRequested":false,"paused":true,"lastBeatAt":1789643695742,"doneAt":1789643695742}
+read1={"running":false,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789644310850,"cancelRequested":false,"paused":true,"lastBeatAt":1789644310882,"doneAt":1789644310882}
+read1={"running":false,"batch":0,"totalBatches":2,"classified":0,"startedAt":1789644327979,"cancelRequested":false,"paused":true,"lastBeatAt":1789644328010,"doneAt":1789644328010}

@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 ﻿import 'fake-indexeddb/auto'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { buildClassifyPrompt, groupsFromAssignments, parseClassifyResponse, seedCategories, runClassify, pauseClassify, getClassifyState } from './classify'
@@ -89,52 +90,92 @@ describe('seedCategories / groupsFromAssignments', () => {
 })
 
 describe('批量分类暂停与断点（UI 合并后单一入口的回归）', () => {
-  it('暂停：cancelRequested 在批边界优雅停止并标记 paused，续跑从断点恢复', async () => {
+  it('暂停：立即 abort 当前批次请求（AbortError 优雅落盘），续跑从断点恢复', async () => {
     // 51 条 → 2 批（50/批）
     const items = Array.from({ length: 51 }, (_, i) => mk(`i${i}`))
     await upsertItems(items)
     const { saveAiSettings } = await import('./provider')
     await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
 
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
     let call = 0
-    vi.stubGlobal('fetch', vi.fn(async () => {
+    // 模拟真实 fetch：只有第一批（推理中）会被 abort 切断；后续批次正常完成
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { signal?: AbortSignal }) => {
       call++
-      if (call === 1) await gate // 第一批挂起，模拟推理中
+      const sig = init?.signal
+      if (call === 1 && sig) {
+        await new Promise<void>((resolve) => {
+          if (sig.aborted) return resolve()
+          sig.addEventListener('abort', () => resolve(), { once: true })
+        })
+        const err = new Error('The operation was aborted.')
+        err.name = 'AbortError'
+        throw err
+      }
       return { ok: true, status: 200, json: async () => '{"items":[]}' }
     }))
 
     await runClassify()
     for (let i = 0; i < 100 && call < 1; i++) await new Promise((r) => setTimeout(r, 20))
-    // 第一批推理中请求暂停（写 cancelRequested）
+    // 第一批推理中请求暂停 → abort 立即切断当前批次
     const paused1 = await pauseClassify()
-    expect(paused1.running).toBe(true) // 循环存活 → 仅标记，批边界生效
-    release()
-    // 等循环在批边界停止
+    expect(paused1.paused === true || paused1.running === true).toBe(true) // 暂停已生效或正在收尾
+    // 等循环识别 AbortError 并落盘暂停态
     let final = await getClassifyState()
+    fs.writeFileSync('.tmp-trace.txt', `read1=${JSON.stringify(final)}\n`, { flag: 'a' })
     for (let i = 0; i < 500 && final.running; i++) {
       await new Promise((r) => setTimeout(r, 20))
       final = await getClassifyState()
+      fs.writeFileSync('.tmp-trace.txt', `poll${i}=${JSON.stringify(final)}\n`, { flag: 'a' })
     }
     expect(final.running).toBe(false)
     expect(final.paused).toBe(true)
-    expect(final.batch).toBe(1) // 第一批完成、第二批未跑
-    expect(call).toBe(1)
+    expect(final.batch).toBe(0) // 被中断的批次不计入完成
+    expect(call).toBe(1) // 第二批从未发起
 
-    // 续跑：从 batch=1 断点继续，处理剩余 1 批
-    const { getAiSettings } = await import('./provider')
+    // 续跑：从 batch=0 重新处理被中断的第一批
     const again = await runClassify()
     expect(again.running).toBe(true)
-    expect(again.batch).toBe(1)
+    expect(again.batch).toBe(0)
     let final2 = await getClassifyState()
     for (let i = 0; i < 500 && final2.running; i++) {
       await new Promise((r) => setTimeout(r, 20))
       final2 = await getClassifyState()
     }
     expect(final2.running).toBe(false)
+    expect(final2.paused ?? false).toBe(false)
     expect(final2.batch).toBe(2)
-    expect(call).toBe(2)
+    expect(call).toBe(3) // 续跑重跑第一批 + 第二批
+  })
+
+  it('批边界暂停（请求已完成、下一批未发起）：不 abort 直接落盘暂停态', async () => {
+    const items = Array.from({ length: 51 }, (_, i) => mk(`j${i}`))
+    await upsertItems(items)
+    const { saveAiSettings } = await import('./provider')
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      return { ok: true, status: 200, json: async () => '{"items":[]}' }
+    }))
+
+    await runClassify()
+    // 等第一批完成（batch=1 落盘）再暂停 → 无进行中请求，走批边界/完成路径
+    for (let i = 0; i < 500; i++) {
+      const s = await getClassifyState()
+      if (s.batch >= 1) break
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    const st = await pauseClassify()
+    // 若循环已自然跑完，pause 返回完成态属正常；否则应处于暂停流程
+    expect(st.running === false || st.cancelRequested === true || st.paused === true).toBe(true)
+    // 无论落在哪个时序，最终必须停且不产生第三批请求
+    let fin = await getClassifyState()
+    for (let i = 0; i < 500 && fin.running; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      fin = await getClassifyState()
+    }
+    expect(fin.running).toBe(false)
+    expect(call).toBeLessThanOrEqual(2)
   })
 
   it('僵尸解除：循环已死但状态仍 running 时，pause 直接落盘暂停态', async () => {
