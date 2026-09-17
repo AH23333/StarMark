@@ -1,4 +1,4 @@
-import { normalizedTitle } from '../insights'
+import { normalizeUrl } from '../normalize'
 import type { UIPrefs } from '../types'
 import type { SearchHit } from './protocol'
 
@@ -7,18 +7,23 @@ export interface ResultSection {
   items: SearchHit[]
 }
 
-/** 按归一化标题找出疑似重复条目（相同标题的 id 集合） */
+/**
+ * 按归一化 URL 找疑似重复条目（审查二轮修正）。
+ * 旧实现按"标题归一化"判重 —— 不同仓库同名标题、Star 与书签的标题写法差异全被误报，
+ * 用户实测"只收藏了一条却被标疑似重复"。真正的重复信号是**同一条内容出现多次**，
+ * 即归一化 URL 相同但条目 id 不同（历史残留数据：normalize 加固前的 http/www 变体行）。
+ */
 export function collectDupIds(hits: SearchHit[]): Set<string> {
-  const byTitle = new Map<string, string[]>()
+  const byUrl = new Map<string, string[]>()
   for (const h of hits) {
-    const key = normalizedTitle(h.title)
+    const key = normalizeUrl(h.url) || h.url.toLowerCase()
     if (!key) continue
-    const arr = byTitle.get(key) ?? []
+    const arr = byUrl.get(key) ?? []
     arr.push(h.id)
-    byTitle.set(key, arr)
+    byUrl.set(key, arr)
   }
   const ids = new Set<string>()
-  for (const [, arr] of byTitle) if (arr.length > 1) arr.forEach((id) => ids.add(id))
+  for (const [, arr] of byUrl) if (arr.length > 1) arr.forEach((id) => ids.add(id))
   return ids
 }
 

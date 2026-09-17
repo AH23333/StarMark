@@ -30,11 +30,19 @@ function decodeEntities(s: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(Number.parseInt(n, 16)))
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
 }
 
-/** 从 trending 页 HTML 解析仓库列表（正则，无 DOM 依赖，SW/页面均可跑）。 */
+/**
+ * 从 trending 页 HTML 解析仓库列表（正则，无 DOM 依赖，SW/页面均可跑）。
+ * 2026-09 修复：主链接改从 <h2> 内严格匹配 owner/repo 两段（旧正则取 article 内
+ * 第一个 <a>，会被 stargazers/forks 等辅助链接命中 → 整条被过滤造成"爬取不全"，
+ * 或误捕获多段路径造成 fullName/url 错误）；星数提取先剥标签（数字前常有 svg）；
+ * 描述只认 col-9 段（不再回退到任意 <p>，Star 按钮文本不再混入描述）。
+ */
 export function parseTrendingHtml(html: string): TrendingRepo[] {
   const out: TrendingRepo[] = []
   const parts = html.split(/<article\b/)
@@ -42,26 +50,24 @@ export function parseTrendingHtml(html: string): TrendingRepo[] {
     const end = part.indexOf('</article>')
     if (end < 0) continue
     const chunk = part.slice(0, end)
-    const link = chunk.match(/<a\s[^>]*href="\/([^"#?]+\/[^"#?]+?)"/)
-    if (!link) continue
-    const fullName = link[1]!.replace(/\/$/, '')
-    if (/(stargazers|forks|watchers)$/.test(fullName)) continue
-    // 真实页面结构：描述在 <p class="col-9">；其余 <p>（如内置 Star 按钮区）不是描述
-    const descM = chunk.match(/<p[^>]*col-9[^>]*>([\s\S]*?)<\/p>/) ?? chunk.match(/<p[^>]*>([\s\S]*?)<\/p>/)
+    // 仓库主链接在 <h2> 内，严格 owner/repo 两段（排除 /owner/repo/stargazers 等多段路径）
+    const repoM = chunk.match(/<h2[^>]*>\s*<a\s[^>]*href="\/([\w.-]+\/[\w.-]+)"[^>]*>/)
+    if (!repoM) continue
+    const fullName = repoM[1]!.replace(/\/$/, '')
+    // 描述固定在 col-9 段；其他 <p>（内置 Star 按钮区等）不回退，避免按钮文本混入
+    const descM = chunk.match(/<p[^>]*col-9[^>]*>([\s\S]*?)<\/p>/)
     const langM = chunk.match(/itemprop="programmingLanguage">\s*([^<]+?)\s*</)
-    const starM = chunk.match(/stargazers"[\s\S]*?([\d,]+)\s*<\/a>/)
+    // 星数在 stargazers 链接内，数字前常夹 svg 图标 → 先剥标签再取数字
+    const starChunk = chunk.match(/href="[^"]*stargazers"[^>]*>([\s\S]*?)<\/a>/)
+    const starText = starChunk ? stripTags(starChunk[1]!).replace(/[^\d,]/g, '') : ''
     const periodM = chunk.match(/([\d,]+)\s+stars?\s+(?:today|this week|this month)/)
+    const description = descM ? decodeEntities(stripTags(descM[1]!)).replace(/\s+/g, ' ').trim() : ''
     out.push({
       fullName,
       url: "https://github.com/" + fullName,
-      description: descM
-        ? decodeEntities(stripTags(descM[1]!))
-            .replace(/\bStar\b/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-        : "",
+      description,
       language: langM ? langM[1]!.trim() : null,
-      stars: starM ? Number(starM[1]!.replace(/,/g, "")) : 0,
+      stars: starText ? Number(starText.replace(/,/g, "")) : 0,
       starsToday: periodM ? Number(periodM[1]!.replace(/,/g, "")) : undefined,
     })
   }

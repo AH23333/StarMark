@@ -22,13 +22,21 @@ const tx = (key: string, vars?: Record<string, string | number>): string =>
   vars ? `${key}:${Object.values(vars).join(',')}` : key
 
 describe('selectors', () => {
-  it('按归一化标题找出重复 id（忽略大小写/空格）', () => {
+  it('按归一化 URL 找出重复 id（同内容不同 URL 变体；同标题不同 URL 不算）', () => {
     const ids = collectDupIds([
-      hit({ id: 'a', title: 'Foo Bar', url: 'https://a' }),
-      hit({ id: 'b', title: 'foo bar', url: 'https://b' }),
-      hit({ id: 'c', title: 'Unique', url: 'https://c' }),
+      hit({ id: 'a', title: 'Foo Bar', url: 'https://github.com/foo/bar' }),
+      hit({ id: 'b', title: 'foo bar', url: 'http://www.github.com/foo/bar' }), // 同内容变体
+      hit({ id: 'c', title: 'Unique', url: 'https://github.com/unique/repo' }),
     ])
     expect([...ids].sort()).toEqual(['a', 'b'])
+  })
+
+  it('同标题不同 URL 不误报（旧版按标题判重的回归）', () => {
+    const ids = collectDupIds([
+      hit({ id: 'a', title: 'React', url: 'https://github.com/foo/bar' }),
+      hit({ id: 'b', title: 'React', url: 'https://example.com/react' }),
+    ])
+    expect([...ids]).toEqual([])
   })
 
   it('groupByDomain 按域名聚合并按数量降序', () => {

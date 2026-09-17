@@ -1,4 +1,5 @@
 import type { StarItem } from './types'
+import { normalizeUrl } from './normalize'
 
 export type TFunc = (key: string, vars?: Record<string, string | number>) => string
 
@@ -40,23 +41,18 @@ export interface HealthReport {
   trend: DayCount[]
 }
 
-/** 归一标题：小写、折叠空白、剥离 github owner 前缀只留签名段比对。 */
-export function normalizedTitle(title: string): string {
-  return title.trim().toLowerCase().replace(/\s+/g, ' ')
-}
-
-/** 标题级近似去重（同一标题命中多条 URL）。 */
+/** 按 URL 归一化的近似去重（同一条内容出现多条 URL 变体，如 http/https、www 前缀的历史残留）。 */
 export function findDuplicates(items: StarItem[]): DuplicateGroup[] {
-  const byTitle = new Map<string, StarItem[]>()
+  const byUrl = new Map<string, StarItem[]>()
   for (const item of items) {
-    const key = normalizedTitle(item.title)
+    const key = normalizeUrl(item.url) || item.url.toLowerCase()
     if (!key) continue
-    const arr = byTitle.get(key)
+    const arr = byUrl.get(key)
     if (arr) arr.push(item)
-    else byTitle.set(key, [item])
+    else byUrl.set(key, [item])
   }
   const groups: DuplicateGroup[] = []
-  for (const [, arr] of byTitle) {
+  for (const [, arr] of byUrl) {
     if (arr.length < 2) continue
     groups.push({
       title: arr[0]!.title,

@@ -73,6 +73,60 @@ export class StarMarkDB extends Dexie {
       }
       await tx.table('searchIndex').clear()
     })
+    // v6（用户实测修复）：normalizeUrl 加固（github.com 强制 https、去 www 前缀）后，
+    // 按 canonical URL 合并存量重复行 —— 此前 http 书签与 https Star、www 变体各成一行，
+    // 同一条内容在收藏夹里出现两次且被误报"疑似重复"。
+    // 合并策略：组内 updatedAt 最新的为主行，其余行 sources 并入、用户字段缺失时补齐；
+    // suggestions.itemId 重映射；meta 全量重算；searchIndex 快照作废（面板自动全量重建）。
+    this.version(6).upgrade(async (tx: Transaction) => {
+      const items = tx.table('items')
+      const rows = (await items.toArray()) as StarItem[]
+      const groups = new Map<string, StarItem[]>()
+      for (const row of rows) {
+        const canonical = normalizeUrl(row.url) || row.url
+        const arr = groups.get(canonical) ?? []
+        arr.push(row)
+        groups.set(canonical, arr)
+      }
+      const idMap = new Map<string, string>()
+      const merged: StarItem[] = []
+      for (const [canonical, arr] of groups) {
+        arr.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+        const primary: StarItem = { ...arr[0]! }
+        for (const other of arr.slice(1)) {
+          idMap.set(other.id, primary.id)
+          const sources = new Set([...primary.sources, ...other.sources])
+          primary.sources = [...sources]
+          const dst = primary as unknown as Record<string, unknown>
+          const src = other as unknown as Record<string, unknown>
+          for (const f of USER_FIELDS) {
+            if (dst[f] === undefined && src[f] !== undefined) dst[f] = src[f]
+          }
+        }
+        const nid = hashId(canonical)
+        idMap.set(primary.id, nid)
+        primary.url = canonical
+        primary.id = nid
+        merged.push(primary)
+      }
+      await items.clear()
+      await items.bulkPut(merged)
+
+      const suggestions = tx.table('suggestions')
+      const sugg = (await suggestions.toArray()) as TagSuggestion[]
+      if (sugg.length > 0) {
+        const byId = new Map<string, TagSuggestion>()
+        for (const s of sugg) {
+          const itemId = idMap.get(s.itemId) ?? s.itemId
+          byId.set(`${itemId}|${s.tag}`, { ...s, id: `${itemId}|${s.tag}`, itemId })
+        }
+        await suggestions.clear()
+        await suggestions.bulkPut([...byId.values()])
+      }
+      await tx.table('searchIndex').clear()
+      // 行数与来源在合并中变化，meta 全量重算（meta 表在 DB 内，upgrade 事务可写）
+      await tx.table('meta').put({ key: 'app', value: computeAppMeta(merged) })
+    })
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildHealthReport, findDuplicates, languageDistribution, normalizedTitle, trendSeries, type TFunc } from './insights'
+import { buildHealthReport, findDuplicates, languageDistribution, trendSeries, type TFunc } from './insights'
 import type { StarItem } from './types'
 
 const tx: TFunc = (k, vars) => {
@@ -43,18 +43,12 @@ function mk(id: string, over: Partial<StarItem> & { language?: string } = {}): S
   }
 }
 
-describe('normalizedTitle', () => {
-  it('小写并折叠空白', () => {
-    expect(normalizedTitle('  Foo   Bar ')).toBe('foo bar')
-  })
-})
-
-describe('findDuplicates', () => {
-  it('同标题多条 URL 组成重复组', () => {
+describe('findDuplicates（按 URL 归一化判重）', () => {
+  it('同 URL 变体（http/https、www）组成重复组', () => {
     const items = [
-      mk('1', { title: 'React' }),
-      mk('2', { title: 'react' }),
-      mk('3', { title: 'Vue' }),
+      mk('1', { title: 'React', url: 'https://github.com/foo/bar' }),
+      mk('2', { title: 'react', url: 'http://www.github.com/foo/bar' }),
+      mk('3', { title: 'Vue', url: 'https://github.com/vuejs/vue' }),
     ]
     const groups = findDuplicates(items)
     expect(groups).toHaveLength(1)
@@ -62,8 +56,17 @@ describe('findDuplicates', () => {
     expect(groups[0]!.urls).toHaveLength(2)
   })
 
+  it('同标题不同 URL 不算重复（旧版按标题误报的回归）', () => {
+    expect(
+      findDuplicates([
+        mk('1', { title: 'React', url: 'https://github.com/foo/bar' }),
+        mk('2', { title: 'React', url: 'https://example.com/react' }),
+      ]),
+    ).toHaveLength(0)
+  })
+
   it('无重复则返回空', () => {
-    expect(findDuplicates([mk('1', { title: 'A' }), mk('2', { title: 'B' })])).toHaveLength(0)
+    expect(findDuplicates([mk('1', { title: 'A', url: 'https://a.dev/' }), mk('2', { title: 'B', url: 'https://b.dev/' })])).toHaveLength(0)
   })
 })
 
@@ -100,8 +103,8 @@ describe('buildHealthReport', () => {
 
   it('识别重复并扣分', () => {
     const items = [
-      mk('1', { title: 'Dup', tags: ['x'], createdAt: Date.now() }),
-      mk('2', { title: 'dup', tags: ['y'], createdAt: Date.now() - 1000 }),
+      mk('1', { title: 'Dup', tags: ['x'], createdAt: Date.now(), url: 'https://github.com/foo/bar' }),
+      mk('2', { title: 'dup', tags: ['y'], createdAt: Date.now() - 1000, url: 'http://www.github.com/foo/bar' }),
     ]
     const r = buildHealthReport(items, 14, tx)
     expect(r.duplicates).toHaveLength(1)

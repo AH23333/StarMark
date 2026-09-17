@@ -31,6 +31,27 @@ describe('normalizeUrl', () => {
   })
 })
 
+describe('normalizeUrl', () => {
+  it('github.com 变体全部归一为同一 canonical（Star 与书签同 URL 合并的前提）', () => {
+    const want = 'https://github.com/foo/bar'
+    expect(normalizeUrl('https://github.com/foo/bar')).toBe(want)
+    expect(normalizeUrl('http://github.com/foo/bar')).toBe(want) // http 强制 https
+    expect(normalizeUrl('https://www.github.com/foo/bar')).toBe(want) // www 前缀去除
+    expect(normalizeUrl('https://github.com/foo/bar/')).toBe(want) // 尾斜杠
+    expect(normalizeUrl('https://github.com/foo/bar?tab=readme-ov-file')).toBe(want) // tab 参数
+    expect(normalizeUrl('https://github.com/foo/bar/blob/main/README.md')).toBe(want) // 子页面收窄
+  })
+
+  it('非 github 站点保留协议差异（http/https 语义不同）', () => {
+    expect(normalizeUrl('http://example.com/x')).toBe('http://example.com/x')
+    expect(normalizeUrl('https://example.com/x')).toBe('https://example.com/x')
+  })
+
+  it('剥离追踪参数与锚点', () => {
+    expect(normalizeUrl('https://a.dev/p?utm_source=x&id=3#top')).toBe('https://a.dev/p?id=3')
+  })
+})
+
 describe('hashId', () => {
   it('稳定且为 128-bit 定长（审查 P1-1：32 位 hex）', () => {
     const h1 = hashId('https://github.com/owner/repo')

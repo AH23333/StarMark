@@ -56,6 +56,28 @@ describe('parseTrendingHtml', () => {
   it('空页面返回空数组', () => {
     expect(parseTrendingHtml('<html><body>nothing</body></html>')).toEqual([])
   })
+
+  it('辅助链接（stargazers/forks）出现在主链接前也不误捕获（爬取不全/信息错误的回归）', () => {
+    const tricky = `
+    <article class="Box-row">
+      <a href="/features">Features</a>
+      <h2><a href="/foo/bar" data-view-component>foo/bar</a></h2>
+      <p class="col-9">Build &amp; ship &#39;stuff&#39;.</p>
+      <span itemprop="programmingLanguage">Rust</span>
+      <a href="/foo/bar/stargazers" class="Link--muted"><svg class="octicon"/>7,777</a>
+      <span>77 stars today</span>
+    </article>`
+    const list = parseTrendingHtml(tricky)
+    expect(list).toHaveLength(1)
+    expect(list[0]).toMatchObject({
+      fullName: 'foo/bar', // 不被 stargazers 链接污染成多段路径
+      url: 'https://github.com/foo/bar',
+      description: "Build & ship 'stuff'.",
+      language: 'Rust',
+      stars: 7777,
+      starsToday: 77,
+    })
+  })
 })
 
 

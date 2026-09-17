@@ -37,7 +37,11 @@ export function normalizeUrl(input: string): string {
   for (const key of TRACKING_PARAMS) url.searchParams.delete(key)
 
   const host = url.hostname
-  if (host === 'github.com' || host.endsWith('.github.com')) {
+  // github.com 永远 https，且 www.github.com 归一为 github.com：
+  // 否则 http 书签与 https Star 会成为两行、同仓库被误报"疑似重复"（用户实测踩坑）
+  if (host === 'www.github.com') url.hostname = 'github.com'
+  if (url.hostname === 'github.com' || url.hostname.endsWith('.github.com')) {
+    if (url.protocol === 'http:') url.protocol = 'https:'
     const parts = url.pathname.split('/').filter(Boolean)
     if (parts.length >= 2) {
       // owner/repo[/tree|/commits|...]，统一收窄到仓库首页

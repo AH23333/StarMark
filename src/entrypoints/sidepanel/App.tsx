@@ -138,8 +138,13 @@ export default function App() {
     const loadState = () => void sendToBackground({ type: 'get-state' }).then((res) => res.state && setState(res.state))
     void loadState()
 
-    // index 失效（数据变更）→ 触发 worker 重建、刷新树与计数（无论同步从哪个入口发起）
+    // index 失效（数据变更）→ 触发 worker 重建、刷新树与计数（无论同步从哪个入口发起）；
+    // 设置页更新偏好（ui）→ 实时同步到侧边栏（排序/来源/隐藏/右键菜单开关等，无需重开面板）
     const onStorage = (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, area: string) => {
+      if (area === 'local' && changes.ui) {
+        const next = changes.ui.newValue as Partial<UIPrefs> | undefined
+        if (next && typeof next === 'object') setPrefs((p) => ({ ...p, ...next }))
+      }
       if (area === 'local' && changes.indexVersion) {
         const newVersion = changes.indexVersion.newValue as number
         setIndexVersion(newVersion)
