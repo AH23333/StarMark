@@ -297,5 +297,6 @@
   "opt.ai.approveAll": "全部批准",
   "opt.ai.rejectAll": "全部拒绝",
   "opt.ai.approve": "批准",
-  "opt.ai.reject": "拒绝"
+  "opt.ai.reject": "拒绝",
+  "opt.ai.ollamaHint": "Ollama 连接排查：1) 确认服务已启动（ollama serve）；2) 若提示 403，重启 Ollama 前设置环境变量 OLLAMA_ORIGINS=\"*\" —— 扩展来源不在 Ollama 默认白名单（扩展已自动尝试移除 Origin 头，通常无需此步）；3) 模型名需与 ollama list 输出一致，首次使用先 ollama pull。"
 }

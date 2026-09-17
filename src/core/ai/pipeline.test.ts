@@ -163,4 +163,41 @@ describe('建议桶流水线（fetch mock）', () => {
     expect(state.error).toBeTruthy()
     expect((await pendingSuggestions()).length).toBe(0)
   })
+
+  it('Ollama 免 API Key：enabled + ollama 即可跑通流水线（AI 无法调用的根因回归）', async () => {
+    await upsertItems([item('a', 'o/a', { updatedAt: 1000 })])
+    await saveAiSettings({ enabled: true, provider: 'ollama', apiKey: '', model: 'llama3.2' })
+
+    let chatPrompt = ''
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? '{}') as { messages: { content: string }[]; model: string; stream: boolean }
+      chatPrompt = body.messages[0]?.content ?? ''
+      expect(body.model).toBe('llama3.2')
+      expect(body.stream).toBe(false)
+      // 断言请求发往 Ollama 而非 OpenAI 端点（旧实现入口拦截后根本不会发请求）
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ message: { content: '["local","ollama"]' } }),
+      }
+    }))
+
+    const state = await runAiSuggestPipeline()
+    expect(state.running).toBe(false)
+    expect(state.error).toBeUndefined()
+    expect(state.scanned).toBe(1)
+    expect(state.suggested).toBe(2)
+    expect(chatPrompt).toContain('o/a')
+
+    const pending = await pendingSuggestions()
+    expect(pending.map((p) => p.tag).sort()).toEqual(['local', 'ollama'])
+  })
+
+  it('云端服务商缺 Key 时错误信息可区分（不再是笼统的未配置 Key）', async () => {
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: '', model: 'm' })
+    await upsertItems([item('a', 'o/a')])
+    const state = await runAiSuggestPipeline()
+    expect(state.error).toContain('API Key')
+    expect(state.running).toBe(false)
+  })
 })

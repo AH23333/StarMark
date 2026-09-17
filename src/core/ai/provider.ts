@@ -46,10 +46,20 @@ export class AiDisabledError extends Error {
   }
 }
 
+/**
+ * 统一的"AI 已配置可用"判断（二轮修复）：Ollama 是本地服务、不需要 API Key，
+ * 此前 pipeline 入口漏掉该豁免导致选 Ollama 后直接报"AI 未启用或未配置 Key"，
+ * 模型调用根本不会发起。所有入口检查必须走这里，禁止再手写 apiKey 判断。
+ */
+export function isAiConfigured(settings: AiSettings): boolean {
+  if (!settings.enabled) return false
+  if (settings.provider === 'ollama') return true
+  return settings.apiKey.trim().length > 0
+}
+
 /** 给定条目文本，返回建议标签（纯 JSON 数组）。 */
 export async function suggestTagsViaAi(settings: AiSettings, prompt: string): Promise<string[]> {
-  if (!settings.enabled) throw new AiDisabledError()
-  if (settings.provider !== 'ollama' && !settings.apiKey) throw new AiDisabledError()
+  if (!isAiConfigured(settings)) throw new AiDisabledError()
   const content = await chat(settings, prompt)
   return parseTagsJson(content)
 }
@@ -144,15 +154,21 @@ export function buildTagPrompt(input: { title: string; description?: string; not
   return lines.join('\n')
 }
 
-/** Ollama 地址规范化：trim、补协议头、校验端口范围；非法输入抛可读错误。 */
+/**
+ * Ollama 地址规范化：trim、补协议头、校验端口范围；非法输入抛可读错误。
+ * 默认 127.0.0.1（修复）：`localhost` 在部分环境解析为 IPv6 ::1，而 Ollama 默认
+ * 只监听 IPv4 的 127.0.0.1，会造成"连接被拒"；显式 127.0.0.1 消除歧义。
+ */
+export const DEFAULT_OLLAMA_BASE = 'http://127.0.0.1:11434'
+
 export function normalizeOllamaBase(input: string | undefined): string {
   const raw = (input ?? '').trim()
-  const withProto = /^https?:\/\//i.test(raw) ? raw : (raw ? 'http://' + raw : 'http://localhost:11434')
+  const withProto = /^https?:\/\//i.test(raw) ? raw : (raw ? 'http://' + raw : DEFAULT_OLLAMA_BASE)
   let url: URL
   try {
     url = new URL(withProto)
   } catch {
-    throw new Error("Ollama 地址格式不正确：" + raw + "（示例：http://localhost:11434）")
+    throw new Error("Ollama 地址格式不正确：" + raw + "（示例：http://127.0.0.1:11434）")
   }
   const port = url.port === '' ? '80' : url.port
   const portNum = Number(port)
@@ -166,22 +182,51 @@ export async function ollamaBaseUrlOf(settings: AiSettings): Promise<string> {
   return normalizeOllamaBase(settings.ollamaBaseUrl)
 }
 
+/**
+ * Ollama 对带 Origin 的请求做来源白名单校验（≥0.1.47）：扩展发出的请求 Origin 是
+ * chrome-extension://<id>，不在默认白名单 → 一律 403。扩展后台会用 declarativeNetRequest
+ * 自动移除发往本机回环地址请求的 Origin 头来放行；若规则未生效，按报错指引设置
+ * OLLAMA_ORIGINS 即可。
+ */
+function ollamaOriginHint(): string {
+  const extId = (() => {
+    try {
+      return browser.runtime.id ?? '<extension-id>'
+    } catch {
+      return '<extension-id>'
+    }
+  })()
+  return [
+    'Ollama 拒绝了扩展的请求（403，来源白名单）。',
+    '修复方式二选一：',
+    `1) 重启 Ollama 前设置环境变量 OLLAMA_ORIGINS="chrome-extension://${extId}"（或设为 * ）`,
+    '2) Windows PowerShell 示例: $env:OLLAMA_ORIGINS="*"; ollama serve',
+  ].join('\n')
+}
+
 async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false): Promise<string> {
   const base = await ollamaBaseUrlOf(settings)
-  const res = await fetch(`${base}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: settings.model || 'llama3.2',
-      messages: [{ role: 'user', content: prompt }],
-      stream: false,
-      format: jsonMode ? 'json' : undefined,
-      options: { temperature: 0.2, num_ctx: 8192 },
-    }),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: settings.model || 'llama3.2',
+        messages: [{ role: 'user', content: prompt }],
+        stream: false,
+        format: jsonMode ? 'json' : undefined,
+        options: { temperature: 0.2, num_ctx: 8192 },
+      }),
+    })
+  } catch (e) {
+    // fetch 层失败（连接拒绝 / IPv6 歧义 / 浏览器策略拦截）：给可操作的上下文
+    throw new Error(`无法连接本地 Ollama（${base}）：${(e as Error).message}。请确认已运行 ollama serve，且地址/端口正确`)
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     if (res.status === 404) throw new Error('Ollama 端点不存在（已尝试 ' + base + '/api/chat）：请确认服务已启动（ollama serve）且地址正确')
+    if (res.status === 403) throw new Error(ollamaOriginHint())
     throw new Error(`Ollama 请求失败 (${base}/api/chat -> ${res.status}) ${detail.slice(0, 160)}`)
   }
   const data = (await res.json()) as { message?: { content?: string } }
@@ -192,7 +237,10 @@ async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false
 export async function listOllamaModels(settings: AiSettings): Promise<string[]> {
   const base = await ollamaBaseUrlOf(settings)
   const res = await fetch(`${base}/api/tags`)
-  if (!res.ok) throw new Error(`Ollama 连接失败 (${base}/api/tags -> ${res.status})`)
+  if (!res.ok) {
+    if (res.status === 403) throw new Error(ollamaOriginHint())
+    throw new Error(`Ollama 连接失败 (${base}/api/tags -> ${res.status})`)
+  }
   const data = (await res.json()) as { models?: { name: string }[] }
   return (data.models ?? []).map((m) => m.name)
 }

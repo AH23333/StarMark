@@ -777,6 +777,7 @@ export default function App() {
               onBlur={() => void saveAi(ai)}
             />
           )}
+          {ai.provider === 'ollama' && <p className="desc warn-text">{t('opt.ai.ollamaHint')}</p>}
           {ai.provider === 'openai' && (
             <input
               className="rule-input"

@@ -1,6 +1,6 @@
 ﻿import 'fake-indexeddb/auto'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { parseTagsJson, saveAiSettings, getAiSettings, listOllamaModels, normalizeOllamaBase } from './provider'
+import { isAiConfigured, parseTagsJson, saveAiSettings, getAiSettings, listOllamaModels, normalizeOllamaBase } from './provider'
 
 const { store } = vi.hoisted(() => ({ store: new Map<string, unknown>() }))
 vi.mock('wxt/browser', () => ({
@@ -42,6 +42,15 @@ describe('AI 设置的 ollama 字段', () => {
   })
 })
 
+describe('isAiConfigured（Ollama 免 Key 豁免 —— AI 无法调用的根因回归）', () => {
+  it('ollama 无 Key 也算已配置；云端服务商必须有 Key；总开关优先', () => {
+    expect(isAiConfigured({ enabled: true, provider: 'ollama', apiKey: '', model: 'llama3.2' })).toBe(true)
+    expect(isAiConfigured({ enabled: true, provider: 'openai', apiKey: 'sk-x', model: 'm' })).toBe(true)
+    expect(isAiConfigured({ enabled: true, provider: 'openai', apiKey: '', model: 'm' })).toBe(false)
+    expect(isAiConfigured({ enabled: false, provider: 'ollama', apiKey: '', model: 'm' })).toBe(false)
+  })
+})
+
 describe('Ollama 连接', () => {
   it('listOllamaModels 解析 /api/tags', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -56,13 +65,28 @@ describe('Ollama 连接', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, text: async () => '' })))
     await expect(listOllamaModels({ enabled: true, provider: 'ollama', apiKey: '', model: '' })).rejects.toThrow(/Ollama/)
   })
+
+  it('ollama 403 给出 OLLAMA_ORIGINS 来源白名单指引（≥0.1.47 拒绝扩展 Origin）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, text: async () => '' })))
+    await expect(listOllamaModels({ enabled: true, provider: 'ollama', apiKey: '', model: '' })).rejects.toThrow(/OLLAMA_ORIGINS/)
+  })
+
+  it('连接失败（fetch 抛错）给可操作提示而非裸 TypeError', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    }))
+    const { suggestTagsViaAi } = await import('./provider')
+    await expect(
+      suggestTagsViaAi({ enabled: true, provider: 'ollama', apiKey: '', model: 'llama3.2' }, 'p'),
+    ).rejects.toThrow(/无法连接本地 Ollama/)
+  })
 })
 
 
 describe('normalizeOllamaBase（地址规范化与校验）', () => {
-  it('空值回退默认本机端点；无协议自动补 http://', () => {
-    expect(normalizeOllamaBase('')).toBe('http://localhost:11434')
-    expect(normalizeOllamaBase(undefined)).toBe('http://localhost:11434')
+  it('空值回退默认本机端点（127.0.0.1，避免 localhost 的 IPv6 歧义）；无协议自动补 http://', () => {
+    expect(normalizeOllamaBase('')).toBe('http://127.0.0.1:11434')
+    expect(normalizeOllamaBase(undefined)).toBe('http://127.0.0.1:11434')
     expect(normalizeOllamaBase('localhost:11434')).toBe('http://localhost:11434')
     expect(normalizeOllamaBase('  http://192.168.1.5:11434/  ')).toBe('http://192.168.1.5:11434')
   })

@@ -52,6 +52,54 @@ export default defineBackground(() => {
     await browser.alarms.create(ALARM_NAME, { periodInMinutes: Math.max(30, hours * 60) })
   }
 
+  /*
+   * 本地 Ollama 零配置放行（AI 修复）：Ollama ≥0.1.47 按来源白名单校验请求，
+   * 扩展的 Origin（chrome-extension://<id>）不在默认白名单 → 一律 403。
+   * 用 DNR 把"扩展自身发往本机回环地址"的请求移除 Origin 头 —— Ollama 对无
+   * Origin 请求不做校验。initiatorDomains 限定 runtime.id，只影响扩展自己的
+   * 请求，不碰浏览器里其他网站对 localhost 的正常请求。
+   */
+  const OLLAMA_ORIGIN_RULE_ID = 20260917
+
+  async function setupLocalOriginRule(): Promise<void> {
+    try {
+      const dnr = (browser as unknown as {
+        declarativeNetRequest?: {
+          updateDynamicRules: (o: {
+            removeRuleIds: number[]
+            addRules: {
+              id: number
+              priority: number
+              action: { type: string; requestHeaders: { header: string; operation: string }[] }
+              condition: { initiatorDomains: string[]; requestDomains: string[]; resourceTypes: string[] }
+            }[]
+          }) => Promise<void>
+        }
+      }).declarativeNetRequest
+      if (!dnr) return
+      await dnr.updateDynamicRules({
+        removeRuleIds: [OLLAMA_ORIGIN_RULE_ID],
+        addRules: [
+          {
+            id: OLLAMA_ORIGIN_RULE_ID,
+            priority: 1,
+            action: {
+              type: 'modifyHeaders',
+              requestHeaders: [{ header: 'Origin', operation: 'remove' }],
+            },
+            condition: {
+              initiatorDomains: [browser.runtime.id],
+              requestDomains: ['localhost', '127.0.0.1'],
+              resourceTypes: ['xmlhttprequest'],
+            },
+          },
+        ],
+      })
+    } catch (e) {
+      console.warn('[starmark] DNR origin rule setup failed（如仍 403 请设置 OLLAMA_ORIGINS）', e)
+    }
+  }
+
   /** 书签全量索引：无需 Token，节流（10 分钟内不重复全量遍历）。 */
   async function ensureBookmarkWalk(): Promise<void> {
     const state = await getSyncState<BookmarkSyncState>(BM_SYNC_STATE_KEY)
@@ -70,6 +118,7 @@ export default defineBackground(() => {
   /* ---------- 安装 / 启动 ---------- */
   browser.runtime.onInstalled.addListener((details) => {
     void setupAlarm()
+    void setupLocalOriginRule()
     // 点击工具栏图标直接打开侧边栏（Chrome 118+）
     void (browser as unknown as { sidePanel?: { setPanelBehavior: (o: { openPanelOnActionClick: boolean }) => Promise<void> } })
       .sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })
@@ -82,6 +131,7 @@ export default defineBackground(() => {
 
   browser.runtime.onStartup.addListener(() => {
     void setupAlarm()
+    void setupLocalOriginRule()
     void maybeRestoreBookmarks()
     void ensureBookmarkWalk()
     void guardedSync(false)

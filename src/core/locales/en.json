@@ -297,5 +297,6 @@
   "opt.ai.approveAll": "Approve all",
   "opt.ai.rejectAll": "Reject all",
   "opt.ai.approve": "Approve",
-  "opt.ai.reject": "Reject"
+  "opt.ai.reject": "Reject",
+  "opt.ai.ollamaHint": "Ollama troubleshooting: 1) make sure the server is running (ollama serve); 2) if you see 403, set the env var OLLAMA_ORIGINS=\"*\" before restarting Ollama — the extension origin is not in Ollama's default allowlist (the extension already strips the Origin header automatically, usually unnecessary); 3) the model name must match ollama list, run ollama pull first."
 }

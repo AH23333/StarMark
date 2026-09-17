@@ -297,5 +297,6 @@
   "opt.ai.approveAll": "すべて承認",
   "opt.ai.rejectAll": "すべて却下",
   "opt.ai.approve": "承認",
-  "opt.ai.reject": "却下"
+  "opt.ai.reject": "却下",
+  "opt.ai.ollamaHint": "Ollama 接続チェック：1) サービス起動を確認（ollama serve）；2) 403 が出る場合は Ollama 再起動前に環境変数 OLLAMA_ORIGINS=\"*\" を設定（拡張のオリジンは既定の許可リスト外。拡張側で Origin ヘッダー削除を自動試行、通常は不要）；3) モデル名は ollama list の表示と一致させ、初回は ollama pull を実行。"
 }

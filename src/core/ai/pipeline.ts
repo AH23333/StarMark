@@ -1,7 +1,7 @@
 import { db, updateItem } from '../db'
 import { bumpIndexVersion } from '../version'
 import { getSyncState, setSyncState } from '../db'
-import { buildTagPrompt, getAiSettings, suggestTagsViaAi } from './provider'
+import { buildTagPrompt, getAiSettings, isAiConfigured, suggestTagsViaAi } from './provider'
 import type { TagSuggestion } from '../types'
 
 /**
@@ -38,8 +38,10 @@ const PAGE_SIZE = 10
 export async function runAiSuggestPipeline(maxItems = 30): Promise<AiPipelineState> {
   const settings = await getAiSettings()
   let state = await getAiPipelineState()
-  if (!settings.enabled || !settings.apiKey) {
-    state = { ...state, running: false, error: 'AI 未启用或未配置 Key' }
+  // 入口检查统一走 isAiConfigured：Ollama 是本地服务免 API Key，
+  // 旧实现这里漏掉豁免导致选 Ollama 后点"生成建议"直接报"未配置 Key"（AI 无法调用的根因）
+  if (!isAiConfigured(settings)) {
+    state = { ...state, running: false, error: settings.enabled ? 'AI 未配置完整（云端服务商需填写 API Key）' : 'AI 未启用' }
     await setPipeline(state)
     return state
   }
