@@ -341,17 +341,21 @@ export default defineBackground(() => {
 
   const handlers: { [K in BgRequest['type']]: HandlerFor<K> } = {
     'run-sync': async (msg) => {
+      // 与 ai-run 同理：全量同步（数千 Star × 分页拉取）可能持续数分钟，不能挂在
+      // sendMessage 通道上等完成。启动即返回，进度/结束经 get-state 轮询（syncing 字段）；
+      // guardedSync 保证防重入，检查点状态机保证 SW 被杀后幂等续跑。
       if (syncRunning) return { ok: false, error: t('bg.err.syncRunning') }
       syncRunning = true
-      try {
-        const r = await runGitHubSync(msg.force ?? false)
-        return { ok: r.status === 'OK' || r.status === 'NOT_MODIFIED', error: r.error }
-      } finally {
-        syncRunning = false
-      }
+      void runGitHubSync(msg.force ?? false)
+        .catch((e) => console.warn('[starmark] sync failed', e))
+        .finally(() => {
+          syncRunning = false
+        })
+      return { ok: true, state: await getBgState() }
     },
     'walk-bookmarks': async () => {
-      await walkAllBookmarks()
+      // 全量遍历可能持续数十秒：启动即返回，lastFullWalkAt 落盘即完成信号
+      void walkAllBookmarks().catch((e) => console.warn('[starmark] bookmark walk failed', e))
       return { ok: true }
     },
     'rebuild-index': async () => {
@@ -420,6 +424,7 @@ export default defineBackground(() => {
       ghLogin: (login.ghLogin as string | undefined) ?? undefined,
       lastSyncAt: ghSync?.doneAt,
       status: ghSync?.phase ?? 'IDLE',
+      syncing: syncRunning,
       stars: meta.stars,
       bookmarks: meta.bookmarks,
       hidden: meta.hidden,

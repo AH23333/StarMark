@@ -248,13 +248,30 @@ export default function App() {
     [hits, query, prefs, languageFilter, t],
   )
 
+  // run-sync 已改为启动即返回（长同步不再挂消息通道）：轮询 get-state 直到
+  // syncing=false，完成后刷新动态时间线。同步引发的索引失效由 onStorage 监听统一处理。
   const doSync = async () => {
     setSyncing(true)
     const res = await sendToBackground({ type: 'run-sync', force: true })
-    setNotify(res.ok ? t('sync.ok') : t('sync.failed', { err: res.error ?? t('sync.unknownError') }))
+    if (!res.ok) {
+      setSyncing(false)
+      setNotify(res.error ?? t('sync.unknownError'))
+      return
+    }
+    setNotify(t('sync.inProgress'))
+    let lastState: BgState | null = null
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const st = await sendToBackground({ type: 'get-state' })
+      if (st.state) {
+        setState(st.state)
+        lastState = st.state
+        if (!st.state.syncing) break
+      }
+    }
     setSyncing(false)
-    const st = await sendToBackground({ type: 'get-state' })
-    if (st.state) setState(st.state)
+    const err = lastState?.ghSync?.error
+    setNotify(err ? t('sync.failed', { err }) : t('sync.ok'))
     workerRef.current?.postMessage({ type: 'activity' })
   }
 

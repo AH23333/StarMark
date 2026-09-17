@@ -362,10 +362,27 @@ export default function App() {
     loadShortcuts()
   }, [loadShortcuts])
 
+  // run-sync 已改为启动即返回（长同步不再挂消息通道）：轮询 get-state 直到
+  // syncing=false，再按最后的检查点错误与否提示结果。
   const doSync = async () => {
     setMsg({ kind: 'ok', text: t('msg.sync.progress') })
     const res = await sendToBackground({ type: 'run-sync', force: true })
-    setMsg({ kind: res.ok ? 'ok' : 'err', text: res.ok ? t('sync.ok') : t('sync.failed', { err: res.error ?? t('sync.unknownError') }) })
+    if (!res.ok) {
+      setMsg({ kind: 'err', text: t('sync.failed', { err: res.error ?? t('sync.unknownError') }) })
+      return
+    }
+    let lastState: BgState | null = null
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const st = await sendToBackground({ type: 'get-state' })
+      if (st.state) {
+        setState(st.state)
+        lastState = st.state
+        if (!st.state.syncing) break
+      }
+    }
+    const err = lastState?.ghSync?.error
+    setMsg(err ? { kind: 'err', text: t('sync.failed', { err }) } : { kind: 'ok', text: t('sync.ok') })
     refresh()
   }
 

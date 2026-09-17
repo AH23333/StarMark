@@ -29,6 +29,8 @@ export interface BgState {
   hasToken: boolean
   lastSyncAt?: number
   status: string
+  /** GitHub 同步是否正在进行（run-sync 已改为启动即返回，UI 轮询此字段判断结束） */
+  syncing?: boolean
   stars: number
   bookmarks: number
   hidden: number
