@@ -359,14 +359,9 @@ export default defineBackground(() => {
       return { ok: true }
     },
     'apply-rules': async () => ({ ok: true, rules: await applyRulesToAll() }),
-    'ai-run': async () => {
-      // 长任务（30 条 × 每条数秒~数十秒）：启动即返回，进度经 ai-review 轮询。
-      // 旧实现 await 完整跑完 —— 本地 Ollama 推理慢，sendMessage 通道在任务完成前
-      // 随 SW 生命周期终止/通道关闭而失效，报 "message channel closed before a
-      // response was received"。pipeline 内部有检查点与防重入，可安全后台续跑。
-      void runAiSuggestPipeline().catch((e) => console.warn('[starmark] ai pipeline failed', e))
-      return { ok: true, ai: await getAiPipelineState() }
-    },
+    // runAiSuggestPipeline / runClassify 已重构为"同步建立 running 状态并落盘后立即返回，
+    // 处理循环在后台 promise 中继续"——handler 只挂起毫秒级，无通道超时风险，且无启动竞态
+    'ai-run': async () => ({ ok: true, ai: await runAiSuggestPipeline() }),
     'ai-review': async () => ({ ok: true, ai: await getAiPipelineState(), pending: await pendingSuggestions() }),
     'ai-approve': async (msg) => {
       await approveSuggestions(msg.ids)
@@ -376,11 +371,7 @@ export default defineBackground(() => {
       await rejectSuggestions(msg.ids)
       return { ok: true, pending: await pendingSuggestions() }
     },
-    'ai-classify-run': async () => {
-      // 同 ai-run：批量分类可达 40 批，启动即返回，进度经 ai-classify-state 轮询
-      void runClassify().catch((e) => console.warn('[starmark] ai classify failed', e))
-      return { ok: true, classifyState: await getClassifyState() }
-    },
+    'ai-classify-run': async () => ({ ok: true, classifyState: await runClassify() }),
     'ai-classify-state': async () => ({
       ok: true,
       classifyState: await getClassifyState(),

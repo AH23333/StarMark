@@ -194,18 +194,14 @@ async function chatJson(settings: AiSettings, prompt: string): Promise<string> {
 /** 消息入口改为"启动即返回"后防止重复触发并发跑两个循环（SW 会话内存态） */
 let classifyActive = false
 
-/** 启动/续跑批量分类。SW 消息入口只负责触发；进度经 ai-classify-state 轮询。 */
+/**
+ * 启动/续跑批量分类：**同步建立 running 状态并落盘后立即返回**，批处理循环在后台
+ * promise 中继续（消息通道不挂起；每批的 storage 写入持续保活 SW）。
+ * 进度经 ai-classify-state 轮询。旧实现同步等待全部批次完成 —— 本地 Ollama 下
+ * 消息通道随 SW 生命周期终止而失效，报 "message channel closed"。
+ */
 export async function runClassify(): Promise<ClassifyState> {
   if (classifyActive) return getClassifyState()
-  classifyActive = true
-  try {
-    return await runClassifyInner()
-  } finally {
-    classifyActive = false
-  }
-}
-
-async function runClassifyInner(): Promise<ClassifyState> {
   const settings = await getAiSettings()
   let state = await getClassifyState()
   if (!isAiConfigured(settings)) {
@@ -217,7 +213,16 @@ async function runClassifyInner(): Promise<ClassifyState> {
     state = { running: true, batch: 0, totalBatches: 0, classified: 0, startedAt: Date.now() }
     await setClassifyState(state)
   }
+  classifyActive = true
+  void runClassifyLoop(settings, state)
+    .catch((e) => console.warn('[starmark] ai classify crashed', e))
+    .finally(() => {
+      classifyActive = false
+    })
+  return state
+}
 
+async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Promise<void> {
   try {
     const items = (await allItems()).filter((i) => !i.hidden)
     const batches = chunk(items, CLASSIFY_BATCH_SIZE).slice(0, CLASSIFY_MAX_BATCHES)
@@ -252,7 +257,7 @@ async function runClassifyInner(): Promise<ClassifyState> {
         state.error = (e as Error).message
         state.doneAt = Date.now()
         await setClassifyState(state)
-        return state
+        return
       }
       if (tagsById) {
         for (const [id, tags] of tagsById) result.assignments[id] = tags
@@ -272,13 +277,11 @@ async function runClassifyInner(): Promise<ClassifyState> {
     state.doneAt = Date.now()
     state.error = undefined
     await setClassifyState(state)
-    return state
   } catch (e) {
     state.running = false
     state.error = (e as Error).message
     state.doneAt = Date.now()
     await setClassifyState(state)
-    return state
   }
 }
 

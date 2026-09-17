@@ -140,17 +140,31 @@ async function chatAnthropic(settings: AiSettings, prompt: string): Promise<stri
   return data.content?.map((c) => c.text ?? '').join('') ?? ''
 }
 
-/** 建议标签的提示词：只输出 JSON 数组。 */
-export function buildTagPrompt(input: { title: string; description?: string; notes?: string; existingTags?: string[] }): string {
+/**
+ * 建议标签的提示词：只输出 JSON 数组。
+ * @param globalTags 全库高频标签（流水线启动时取 top20）：让模型优先复用现有标签，
+ * 而不是为每个条目自创新词 —— 缓解"一个标签只有一个条目"的标签碎片化。
+ */
+export function buildTagPrompt(input: {
+  title: string
+  description?: string
+  notes?: string
+  existingTags?: string[]
+  globalTags?: string[]
+}): string {
   const lines = [
-    '为下面的收藏条目建议 2-4 个简短标签（小写、单词或短词组，不要重复已有标签）。',
+    '为下面的收藏条目建议 2-4 个简短标签（小写、单词或短词组，不要重复该条目已有的标签）。',
+    input.globalTags?.length
+      ? '优先从【全局常用标签】中选择最贴切的；仅当都不合适时才新建通用、简短的新标签，避免制造只有一条目使用的孤立标签。'
+      : '标签要通用、简短，便于跨条目聚合。',
     '只输出一个 JSON 字符串数组，不要任何解释。',
     '',
     `标题：${input.title}`,
   ]
+  if (input.globalTags?.length) lines.push(`【全局常用标签】${input.globalTags.join(', ')}`)
   if (input.description) lines.push(`描述：${input.description}`)
   if (input.notes) lines.push(`备注：${input.notes}`)
-  if (input.existingTags?.length) lines.push(`已有标签：${input.existingTags.join(', ')}`)
+  if (input.existingTags?.length) lines.push(`该条目已有标签：${input.existingTags.join(', ')}`)
   return lines.join('\n')
 }
 

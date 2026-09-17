@@ -10,7 +10,23 @@ import {
 } from './pipeline'
 import { db, upsertItems } from '../db'
 import { getAppMeta } from '../db'
+import type { AiPipelineState } from './pipeline'
 import type { StarItem } from '../types'
+
+/**
+ * runAiSuggestPipeline 现在是"状态落盘后立即返回、循环后台跑"的语义；
+ * 测试里轮询等待后台循环完成，拿到最终状态。
+ */
+async function runAndWait(maxItems?: number): Promise<AiPipelineState> {
+  const started = await runAiSuggestPipeline(maxItems)
+  if (!started.running) return started
+  for (let i = 0; i < 1000; i++) {
+    await new Promise((r) => setTimeout(r, 20))
+    const s = await getAiPipelineState()
+    if (!s.running) return s
+  }
+  throw new Error('pipeline did not finish in time')
+}
 
 // provider/pipeline/version 都依赖 chrome.storage.local；内存 Map 顶替
 const { store } = vi.hoisted(() => ({ store: new Map<string, unknown>() }))
@@ -92,7 +108,7 @@ describe('建议桶流水线（fetch mock）', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
 
-    const state = await runAiSuggestPipeline()
+    const state = await runAndWait()
     expect(state.running).toBe(false)
     expect(state.scanned).toBe(2)
     expect(state.suggested).toBe(5) // b: 3 + a: 2（react 与已有标签无冲突保留；dev 新增）
@@ -119,7 +135,7 @@ describe('建议桶流水线（fetch mock）', () => {
     const restIds = (await pendingSuggestions()).map((p) => p.id)
     await rejectSuggestions(restIds)
     call = 0
-    const again = await runAiSuggestPipeline()
+    const again = await runAndWait()
     expect(again.suggested).toBe(0)
     expect((await pendingSuggestions()).length).toBe(0)
   })
@@ -145,12 +161,12 @@ describe('建议桶流水线（fetch mock）', () => {
 
     const state = await getAiPipelineState()
     expect(state.running).toBe(false)
-    await runAiSuggestPipeline()
+    await runAndWait()
     const ids1 = (await db.suggestions.toArray()).map((s) => s.id)
     expect(ids1.length).toBe(3)
 
     // 续跑：所有条目都已有 pending 建议 → 不再新增
-    const again = await runAiSuggestPipeline()
+    const again = await runAndWait()
     expect(again.suggested).toBe(0)
     expect((await db.suggestions.toArray()).length).toBe(3)
   })
@@ -182,7 +198,7 @@ describe('建议桶流水线（fetch mock）', () => {
       }
     }))
 
-    const state = await runAiSuggestPipeline()
+    const state = await runAndWait()
     expect(state.running).toBe(false)
     expect(state.error).toBeUndefined()
     expect(state.scanned).toBe(1)
@@ -201,7 +217,7 @@ describe('建议桶流水线（fetch mock）', () => {
     expect(state.running).toBe(false)
   })
 
-  it('防重入：后台运行中重复触发立即返回当前状态，不并发跑两个循环（消息改启动即返回的回归）', async () => {
+  it('防重入：运行中重复触发立即返回当前状态，不并发跑两个循环（消息改启动即返回的回归）', async () => {
     await upsertItems([
       item('a', 'o/a', { updatedAt: 3000 }),
       item('b', 'o/b', { updatedAt: 2000 }),
@@ -218,17 +234,36 @@ describe('建议桶流水线（fetch mock）', () => {
       return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '["t1"]' } }] }) }
     }))
 
-    const first = runAiSuggestPipeline() // 后台运行，卡在第一条
-    await new Promise((r) => setTimeout(r, 50))
-    const second = await runAiSuggestPipeline() // 防重入：立即返回当前状态
+    const started = await runAiSuggestPipeline() // 状态落盘后立即返回，循环后台卡在第一条
+    expect(started.running).toBe(true)
+    const second = await runAiSuggestPipeline() // 防重入：立即返回当前状态，不并发跑循环
     expect(second.running).toBe(true)
-    expect(second.cursor).toBeLessThanOrEqual(2)
 
     release()
-    const done = await first
-    expect(done.running).toBe(false)
+    // 等后台循环完成
+    for (let i = 0; i < 1000; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      const s = await getAiPipelineState()
+      if (!s.running) break
+    }
     // 若无防护，第二次触发会并发处理同样的条目 → fetch 次数翻倍
     expect(call).toBe(2)
-    expect(done.suggested).toBe(2)
+    expect((await getAiPipelineState()).suggested).toBe(2)
+    expect((await getAiPipelineState()).running).toBe(false)
+  })
+
+  it('默认跑完全部候选条目（不再每次只处理 30 条）', async () => {
+    // 造 35 条，超过旧的 30 条上限
+    const items = Array.from({ length: 35 }, (_, i) => item(`x${i}`, `o/x${i}`, { updatedAt: 5000 - i }))
+    await upsertItems(items)
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ choices: [{ message: { content: '["tag1"]' } }] }),
+    })))
+    const state = await runAndWait()
+    expect(state.running).toBe(false)
+    expect(state.scanned).toBe(35)
+    expect((await db.suggestions.toArray()).filter((s) => s.status === 'pending').length).toBe(35)
   })
 })
