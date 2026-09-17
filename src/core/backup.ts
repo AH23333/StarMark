@@ -1,4 +1,4 @@
-import { allItems, db, upsertItems } from './db'
+import { allItems, restoreAllItems } from './db'
 import { bumpIndexVersion } from './version'
 import type { StarItem } from './types'
 
@@ -11,9 +11,13 @@ export interface BackupPayload {
 
 const PBKDF2_ITERATIONS = 100_000
 
+/** 8KB 分块转 Base64（审查 P2-6）：避免 MB 级密文逐字节拼接产生大量中间串。 */
 function b64FromBytes(bytes: Uint8Array<ArrayBuffer>): string {
+  const CHUNK = 0x8000
   let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[])
+  }
   return btoa(bin)
 }
 
@@ -92,9 +96,12 @@ export async function parseBackup(content: string, passphrase?: string): Promise
   return parsed as unknown as BackupPayload
 }
 
-/** 导入备份：先清空本地条目再写入（保留 Token 与设置），并触发索引重建。 */
+/**
+ * 导入备份（审查 P0-1）：通过 restoreAllItems 在同一事务内清空条目/AI 建议/动态、
+ * 由导入条目全量重算 meta 基线后写入（保留 Token 与设置），
+ * 最后 bump 索引版本触发 worker 全量重建。
+ */
 export async function restoreBackup(items: StarItem[]): Promise<void> {
-  await db.items.clear()
-  await upsertItems(items)
+  await restoreAllItems(items)
   await bumpIndexVersion()
 }

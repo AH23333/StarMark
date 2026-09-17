@@ -81,6 +81,7 @@ describe('selectors', () => {
   })
 
   it('sortByPref 语义与 worker 对齐', () => {
-    expect(sortByPref({ id: 'a', title: 'A', url: 'u', sources: [] }, { id: 'b', title: 'B', url: 'u', sources: [], stars: 5 }, 'stars')).toBeGreaterThan(0)
+    expect(sortByPref({ title: 'A' }, { title: 'B', stars: 5 }, 'stars')).toBeGreaterThan(0)
+    expect(sortByPref({ title: 'A', createdAt: 100 }, { title: 'B', createdAt: 200 }, 'recent')).toBeGreaterThan(0)
   })
 })

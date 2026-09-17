@@ -3,6 +3,13 @@ export type Source = 'star' | 'bookmark'
 /** 用户可编辑的条目字段（右键菜单/编辑器），贯穿 msg.ts、db、worker、UI 的唯一事实源 */
 export type ItemEditPatch = Partial<Pick<StarItem, 'notes' | 'tags' | 'hidden'>>
 
+/**
+ * 用户维护字段白名单（审查 R7 / P0-2）：同步合并（mergePreserving）与备份恢复
+ * 共用同一份清单，防止新增用户字段时遗漏保留导致数据丢失。
+ * 新增 StarItem 用户可编辑字段时，务必同步加到这里。
+ */
+export const USER_FIELDS = ['tags', 'notes', 'summary', 'hidden', 'embedded', 'reviewedAt', 'reviewCount', 'reviewSkip'] as const
+
 /** GitHub 仓库的 Star 元信息 */
 export interface StarMeta {
   fullName: string

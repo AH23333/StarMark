@@ -70,6 +70,8 @@ npm run build      # 生产构建，产物在 .output/chrome-mv3
 3. 将 token 粘贴到 StarMark 设置页
 
 > Token 仅保存在本机 `chrome.storage.local`，不通过任何服务器中转；请勿将其提交到公开仓库。
+>
+> **隐私说明**：GitHub Token 与全部书签/Star 数据均只保存在本机（`chrome.storage.local` 与 IndexedDB），不会上传到任何服务器；联网请求仅直达 `api.github.com`（同步 Star 列表）与 favicon 图标服务，导出的备份文件完全由你自行保管。
 
 ## 技术栈
 

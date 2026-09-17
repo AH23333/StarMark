@@ -2,7 +2,7 @@ import { browser } from 'wxt/browser'
 import { GitHubApiError, getRepo, starRepo } from './api/github'
 import { repoToItem } from './api/mappers'
 import { db, getByUrl, upsertItems } from './db'
-import { hashId, normalizeUrl } from './normalize'
+import { normalizeUrl } from './normalize'
 import { bumpIndexVersion } from './version'
 import type { StarItem, StarMeta } from './types'
 

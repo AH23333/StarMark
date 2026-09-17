@@ -29,11 +29,22 @@ export function collectLanguages(hits: SearchHit[]): string[] {
   return [...s].sort()
 }
 
-/** 排序比较器（与 worker 的 sortItems 保持一致语义） */
-export function sortByPref(a: SearchHit, b: SearchHit, sort: UIPrefs['sort']): number {
+/** 可排序条目的最小字段面（SearchHit 天然满足；StarItem 侧把 starMeta.stars 映射为 stars 即可） */
+export interface SortableItem {
+  title: string
+  createdAt?: number
+  starredAt?: number
+  bookmarkedAt?: number
+  stars?: number
+}
+
+/**
+ * 排序比较器（审查 R2）：worker 的浏览/兜底排序、UI 的 BrowseNode 排序、groupHits
+ * 的单组排序此前是三处重复实现，统一到这里一处维护。
+ * `relevance`/`recent` = 按 createdAt 降序；搜索结果的 relevance 保持搜索排序，不经此函数。
+ */
+export function sortByPref(a: SortableItem, b: SortableItem, sort: UIPrefs['sort']): number {
   switch (sort) {
-    case 'recent':
-      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
     case 'starred':
       return (b.starredAt ?? 0) - (a.starredAt ?? 0)
     case 'bookmarked':
@@ -42,9 +53,16 @@ export function sortByPref(a: SearchHit, b: SearchHit, sort: UIPrefs['sort']): n
       return (b.stars ?? 0) - (a.stars ?? 0)
     case 'name':
       return a.title.localeCompare(b.title, 'zh')
+    case 'recent':
+    case 'relevance':
     default:
-      return 0
+      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
   }
+}
+
+/** 按偏好排序的纯拷贝版本（不改原数组顺序） */
+export function sortHitsByPref<T extends SortableItem>(list: T[], sort: UIPrefs['sort']): T[] {
+  return [...list].sort((x, y) => sortByPref(x, y, sort))
 }
 
 /**
@@ -82,7 +100,7 @@ export function groupHits(
   }
 
   if (prefs.sort !== 'relevance') {
-    const sorted = [...list].sort((a, b) => sortByPref(a, b, prefs.sort))
+    const sorted = sortHitsByPref(list, prefs.sort)
     return [{ label: t('results.all', { n: sorted.length }), items: sorted }]
   }
 

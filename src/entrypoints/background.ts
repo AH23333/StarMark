@@ -17,13 +17,34 @@ import {
 import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
+import { formatOmniboxEntry, suggestEntries } from '~/core/omnibox'
 import type { BookmarkSyncState, GitHubSyncState, SuggestEntry } from '~/core/types'
 import type { BgRequest, BgResponse, BgState } from '~/core/msg'
 
 export default defineBackground(() => {
+  // 用户显式语言偏好要在 SW 启动时立即生效（右键菜单标题等），不能等 changes.lang 事件（审查 P1-6）
+  void initI18n()
+
   const ALARM_NAME = 'gh-sync'
   /** 同步防重入（SW 会话内存态，仅本生命周期有效） */
   let syncRunning = false
+
+  /**
+   * 统一的同步入口（二轮复查修复）：alarm / onStartup / onInstalled 此前直接调
+   * runGitHubSync，绕过 syncRunning 互斥 —— 手动同步进行中时定时器触发会产生
+   * 两个并发同步实例，竞态写同一份检查点。所有触发路径都收敛到这里。
+   */
+  async function guardedSync(force = false): Promise<void> {
+    if (syncRunning) return
+    syncRunning = true
+    try {
+      await runGitHubSync(force)
+    } catch (e) {
+      console.warn('[starmark] background sync failed', e)
+    } finally {
+      syncRunning = false
+    }
+  }
 
   async function setupAlarm(): Promise<void> {
     const s = await browser.storage.local.get('syncIntervalHours')
@@ -43,7 +64,7 @@ export default defineBackground(() => {
   }
 
   browser.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === ALARM_NAME) void runGitHubSync(false)
+    if (alarm.name === ALARM_NAME) void guardedSync(false)
   })
 
   /* ---------- 安装 / 启动 ---------- */
@@ -55,7 +76,7 @@ export default defineBackground(() => {
       .catch(() => undefined)
     void ensureBookmarkWalk()
     if (details.reason === 'install') {
-      void runGitHubSync(false)
+      void guardedSync(false)
     }
   })
 
@@ -63,44 +84,19 @@ export default defineBackground(() => {
     void setupAlarm()
     void maybeRestoreBookmarks()
     void ensureBookmarkWalk()
-    void runGitHubSync(false)
+    void guardedSync(false)
   })
 
   /* ---------- omnibox：地址栏 "st 关键字" 轻量建议 ---------- */
+  // 缓存由 storage.onChanged(indexVersion) 事件失效（二轮性能优化）：
+  // 旧实现每次按键都 getIndexVersion() 走一次 storage IPC 做版本校验。
   let suggestCache: SuggestEntry[] | null = null
-  let suggestVersion = -1
 
   async function ensureSuggestCache(): Promise<void> {
-    const indexVersion = await getIndexVersion()
-    if (suggestCache && suggestVersion === indexVersion) return
+    if (suggestCache) return
     const { allItems } = await import('~/core/db')
     const items = await allItems()
     suggestCache = items.map((i) => ({ id: i.id, title: i.title, url: i.url, sources: i.sources }))
-    suggestVersion = indexVersion
-  }
-
-  function suggestEntries(q: string | undefined, entries: SuggestEntry[], max = 8): SuggestEntry[] {
-    const needle = (q ?? '').trim().toLowerCase()
-    if (!needle) return entries.slice(0, max)
-    const scored = entries
-      .map((e) => {
-        const title = e.title.toLowerCase()
-        const url = e.url.toLowerCase()
-        let score = 0
-        if (title.startsWith(needle)) score += 100
-        else if (title.includes(needle)) score += 60
-        if (url.startsWith(`https://${needle}`) || url.includes(needle)) score += 30
-        if (e.sources.includes('bookmark')) score += 5
-        return { e, score }
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-    return scored.slice(0, max).map((x) => x.e)
-  }
-
-  function formatOmniboxEntry(e: SuggestEntry): string {
-    const badges = e.sources.map((s) => (s === 'star' ? '⭐' : '🔖')).join(' ')
-    return `<url>${e.title}</url> ${badges} <dim>${e.url}</dim>`
   }
 
   /*
@@ -116,11 +112,21 @@ export default defineBackground(() => {
 
     if (browser.contextMenus) {
       browser.runtime.onInstalled.addListener(() => {
-        browser.contextMenus?.create({
-          id: 'starmark-collect',
-          title: t('bg.ctx.collect'),
-          contexts: ['page', 'link'],
-        })
+        // onInstalled 在扩展更新时也会触发，而 Chrome 会保留旧菜单项；
+        // 重复 create 同 id 会 reject 且原代码未接 catch → 未处理 rejection（审查 P1-4）。
+        // 先 removeAll 再 create，整段 try/catch 兜底。
+        void (async () => {
+          try {
+            await browser.contextMenus.removeAll()
+            browser.contextMenus?.create({
+              id: 'starmark-collect',
+              title: t('bg.ctx.collect'),
+              contexts: ['page', 'link'],
+            })
+          } catch (e) {
+            console.warn('[starmark] context menu setup failed', e)
+          }
+        })()
       })
 
       // 右键「收藏到 StarMark」：放进专用文件夹（bookmarks.onCreated 会自动入库并记入动态）
@@ -255,15 +261,18 @@ export default defineBackground(() => {
     }
   }
 
-  /* ---------- PAT 变更时校验并同步；语言变更时同步右键菜单标题 ---------- */
+  /* ---------- PAT 变更时校验并同步；语言变更时同步右键菜单标题；索引失效时清 omnibox 缓存 ---------- */
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
+    if (changes.indexVersion) {
+      suggestCache = null
+    }
     if (changes.pat) {
       if (changes.pat.newValue) {
         void validateToken()
           .then((u) => browser.storage.local.set({ ghLogin: u.login }))
           .catch(() => browser.storage.local.remove('ghLogin'))
-        if (!syncRunning) void runGitHubSync(false)
+        if (!syncRunning) void guardedSync(false)
       }
     }
     if (changes.lang) {
@@ -273,140 +282,77 @@ export default defineBackground(() => {
     }
   })
 
-  /* ---------- 消息处理（Side Panel / Options → SW） ---------- */
-  browser.runtime.onMessage.addListener(
-    (msg: BgRequest, _sender, sendResponse: (res: BgResponse) => void) => {
-      const safe = (fn: () => void): boolean => {
-        try {
-          fn()
-          return true
-        } catch (e) {
-          sendResponse({ ok: false, error: (e as Error).message })
-          return true
-        }
+  /* ---------- 消息处理（Side Panel / Options → SW）—— 路由表化（审查 R3） ----------
+   * 每个 handler 收到按 type 收窄后的消息、返回 BgResponse；统一由分发器做异步包装与
+   * 错误兜底，杜绝"忘写 return true 导致 sendResponse 失效"这类新增消息时的隐患。
+   */
+  type HandlerFor<K extends BgRequest['type']> = (msg: Extract<BgRequest, { type: K }>) => Promise<BgResponse> | BgResponse
+  type AnyHandler = (msg: BgRequest) => Promise<BgResponse> | BgResponse
+
+  const handlers: { [K in BgRequest['type']]: HandlerFor<K> } = {
+    'run-sync': async (msg) => {
+      if (syncRunning) return { ok: false, error: t('bg.err.syncRunning') }
+      syncRunning = true
+      try {
+        const r = await runGitHubSync(msg.force ?? false)
+        return { ok: r.status === 'OK' || r.status === 'NOT_MODIFIED', error: r.error }
+      } finally {
+        syncRunning = false
       }
-      if (msg.type === 'run-sync') {
-        if (syncRunning) {
-          sendResponse({ ok: false, error: t('bg.err.syncRunning') })
-          return false
-        }
-        syncRunning = true
-        void runGitHubSync(msg.force ?? false)
-          .then((r) => sendResponse({ ok: r.status === 'OK' || r.status === 'NOT_MODIFIED', error: r.error }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-          .finally(() => {
-            syncRunning = false
-          })
-        return true
-      }
-      if (msg.type === 'walk-bookmarks') {
-        void walkAllBookmarks()
-          .then(() => sendResponse({ ok: true }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'rebuild-index') {
-        void bumpIndexVersion()
-          .then(() => sendResponse({ ok: true }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'apply-rules') {
-        void applyRulesToAll()
-          .then((r) => sendResponse({ ok: true, rules: r }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-run') {
-        void runAiSuggestPipeline()
-          .then((ai) => sendResponse({ ok: true, ai }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-review') {
-        void (async () => {
-          const ai = await getAiPipelineState()
-          const pending = await pendingSuggestions()
-          sendResponse({ ok: true, ai, pending })
-        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-approve' || msg.type === 'ai-reject') {
-        void (async () => {
-          if (msg.type === 'ai-approve') await approveSuggestions(msg.ids)
-          else await rejectSuggestions(msg.ids)
-          const pending = await pendingSuggestions()
-          sendResponse({ ok: true, pending })
-        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-classify-run') {
-        void runClassify()
-          .then((st) => sendResponse({ ok: true, classifyState: st }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-classify-state') {
-        void (async () => {
-          const state = await getClassifyState()
-          const result = await getClassifyResult()
-          sendResponse({ ok: true, classifyState: state, classifyResult: result })
-        })().catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-classify-apply') {
-        void applyClassifications(msg.groupTags ?? null)
-          .then((r) => sendResponse({ ok: true, classifyApply: r }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-classify-export') {
-        void exportClassifications()
-          .then((content) => sendResponse({ ok: true, classifyExport: content }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'ai-classify-import') {
-        void importClassifications(msg.json)
-          .then((r) => sendResponse({ ok: true, classifyResult: r }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'get-state') {
-        void ensureBookmarkWalk()
-        void getBgState()
-          .then((state) => sendResponse({ ok: true, state }))
-          .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
-        return true
-      }
-      if (msg.type === 'update-item') {
-        void (async () => {
-          try {
-            await updateItem(msg.id, msg.patch)
-            await bumpIndexVersion([msg.id])
-            sendResponse({ ok: true })
-          } catch (e) {
-            sendResponse({ ok: false, error: (e as Error).message })
-          }
-        })()
-        return true
-      }
-      if (msg.type === 'batch') {
-        void (async () => {
-          try {
-            const result = await applyBatch(msg.action, { deleteBookmarks: msg.deleteBookmarks })
-            // 全量清空索引不必要：worker 的增量补丁已容错处理“索引中不存在的 id”（含删除场景）
-            await bumpIndexVersion([...new Set(msg.action.ids)])
-            sendResponse({ ok: true, batch: result })
-          } catch (e) {
-            sendResponse({ ok: false, error: (e as Error).message })
-          }
-        })()
-        return true
-      }
-      return false
     },
-  )
+    'walk-bookmarks': async () => {
+      await walkAllBookmarks()
+      return { ok: true }
+    },
+    'rebuild-index': async () => {
+      await bumpIndexVersion()
+      return { ok: true }
+    },
+    'apply-rules': async () => ({ ok: true, rules: await applyRulesToAll() }),
+    'ai-run': async () => ({ ok: true, ai: await runAiSuggestPipeline() }),
+    'ai-review': async () => ({ ok: true, ai: await getAiPipelineState(), pending: await pendingSuggestions() }),
+    'ai-approve': async (msg) => {
+      await approveSuggestions(msg.ids)
+      return { ok: true, pending: await pendingSuggestions() }
+    },
+    'ai-reject': async (msg) => {
+      await rejectSuggestions(msg.ids)
+      return { ok: true, pending: await pendingSuggestions() }
+    },
+    'ai-classify-run': async () => ({ ok: true, classifyState: await runClassify() }),
+    'ai-classify-state': async () => ({
+      ok: true,
+      classifyState: await getClassifyState(),
+      classifyResult: await getClassifyResult(),
+    }),
+    'ai-classify-apply': async (msg) => ({ ok: true, classifyApply: await applyClassifications(msg.groupTags ?? null) }),
+    'ai-classify-export': async () => ({ ok: true, classifyExport: await exportClassifications() }),
+    'ai-classify-import': async (msg) => ({ ok: true, classifyResult: await importClassifications(msg.json) }),
+    'get-state': async () => {
+      void ensureBookmarkWalk()
+      return { ok: true, state: await getBgState() }
+    },
+    'update-item': async (msg) => {
+      await updateItem(msg.id, msg.patch)
+      await bumpIndexVersion([msg.id])
+      return { ok: true }
+    },
+    'batch': async (msg) => {
+      const result = await applyBatch(msg.action, { deleteBookmarks: msg.deleteBookmarks })
+      // 全量清空索引不必要：worker 的增量补丁已容错处理"索引中不存在的 id"（含删除场景）
+      await bumpIndexVersion([...new Set(msg.action.ids)])
+      return { ok: true, batch: result }
+    },
+  }
+
+  browser.runtime.onMessage.addListener((msg: BgRequest, _sender, sendResponse: (res: BgResponse) => void) => {
+    const handler = (handlers as Record<string, AnyHandler | undefined>)[msg.type]
+    if (!handler) return false
+    void (async () => handler(msg))()
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: (e as Error).message }))
+    return true
+  })
 
   async function getBgState(): Promise<BgState> {
     const [token, login, ghSync, bmSync, meta, indexVersion] = await Promise.all([

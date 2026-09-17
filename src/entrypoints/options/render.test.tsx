@@ -1,4 +1,6 @@
 ﻿// @vitest-environment jsdom
+// App 的 refresh effect 会 allItems() 走 Dexie/IndexedDB，jsdom 需要内存实现兜底
+import 'fake-indexeddb/auto'
 import { describe, expect, it, vi, beforeAll } from 'vitest'
 import React from 'react'
 import { createRoot } from 'react-dom/client'

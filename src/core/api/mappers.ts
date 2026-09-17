@@ -45,14 +45,3 @@ export function repoToItem(repo: GitHubRepo): StarItem {
     updatedAt: Date.now(),
   }
 }
-
-/** 合并：以 Star 为底，将书签信息并入同一行（不在此处改 sources，由调用方处理） */
-export function mergedWithBookmark(star: StarItem, bookmark: Pick<StarItem, 'title' | 'bookmarkMeta' | 'bookmarkedAt'>): StarItem {
-  return {
-    ...star,
-    title: bookmark.title || star.title,
-    bookmarkedAt: bookmark.bookmarkedAt ?? star.bookmarkedAt,
-    bookmarkMeta: bookmark.bookmarkMeta,
-    sources: star.sources.includes('bookmark') ? star.sources : [...star.sources, 'bookmark'],
-  }
-}

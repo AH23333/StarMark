@@ -65,6 +65,20 @@ describe('meta 计数一致性', () => {
     expect(row?.updatedAt).toBe(5000)
   })
 
+  it('upsert 同步合并保留回顾模式字段（审查 P0-2 回归）', async () => {
+    await upsertItems([
+      item('a', 'o/a', ['star'], { tags: ['keep'], summary: 's', reviewedAt: 12345, reviewCount: 3, reviewSkip: true }),
+    ])
+    // 第二次同步产物不含 review 字段（repoToItem / bookmarkToItem 均不带）→ 不应清零回顾进度
+    await upsertItems([{ ...item('a', 'o/a', ['star'], { updatedAt: 2000 }), starMeta: { stars: 99 } as StarItem['starMeta'] }])
+    const row = await getByUrl(normalizeUrl('https://github.com/o/a'))
+    expect(row?.reviewedAt).toBe(12345)
+    expect(row?.reviewCount).toBe(3)
+    expect(row?.reviewSkip).toBe(true)
+    expect(row?.summary).toBe('s')
+    expect(row?.tags).toEqual(['keep'])
+  })
+
   it('updateItem 局部修改标签/隐藏并同步直方图', async () => {
     await upsertItems([item('a', 'o/a', ['star'], { tags: ['x', 'y'] }), item('b', 'o/b', ['star'], { tags: ['x'] })])
     await updateItem('a', { tags: ['z'] })

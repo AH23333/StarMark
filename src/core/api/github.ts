@@ -41,7 +41,8 @@ async function githubFetch<T>(path: string, init: RequestInit = {}): Promise<T> 
     throw new GitHubApiError(403, '权限不足或已限流', retryAfter ? Number(retryAfter) * 1000 : undefined)
   }
   if (res.status === 429) {
-    throw new GitHubApiError(429, 'GitHub 速率限制，请稍后重试')
+    const retryAfter = res.headers.get('Retry-After')
+    throw new GitHubApiError(429, 'GitHub 速率限制，请稍后重试', retryAfter ? Number(retryAfter) * 1000 : undefined)
   }
   if (res.status === 404) throw new GitHubApiError(404, '资源不存在')
   if (!res.ok) throw new GitHubApiError(res.status, `GitHub API 错误 (${res.status})`)
@@ -86,7 +87,10 @@ export async function listStarred(
     const retryAfter = res.headers.get('Retry-After')
     throw new GitHubApiError(403, '权限不足或已限流', retryAfter ? Number(retryAfter) * 1000 : undefined)
   }
-  if (res.status === 429) throw new GitHubApiError(429, 'GitHub 速率限制，请稍后重试')
+  if (res.status === 429) {
+    const retryAfter = res.headers.get('Retry-After')
+    throw new GitHubApiError(429, 'GitHub 速率限制，请稍后重试', retryAfter ? Number(retryAfter) * 1000 : undefined)
+  }
   if (!res.ok) throw new GitHubApiError(res.status, `GitHub API 错误 (${res.status})`)
 
   const entries = (await res.json()) as Array<{ starred_at?: string; repo: GitHubRepo }>

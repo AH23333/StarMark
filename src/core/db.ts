@@ -1,6 +1,7 @@
-import Dexie, { type EntityTable } from 'dexie'
+import Dexie, { type EntityTable, type Transaction } from 'dexie'
 import { browser } from 'wxt/browser'
-import { normalizeUrl } from './normalize'
+import { hashId, normalizeUrl } from './normalize'
+import { USER_FIELDS } from './types'
 import type { ActivityEntry, ItemEditPatch, SearchIndexRecord, Source, StarItem, SyncStateRow, TagSuggestion } from './types'
 
 export class StarMarkDB extends Dexie {
@@ -40,6 +41,38 @@ export class StarMarkDB extends Dexie {
       meta: 'key',
       suggestions: 'id, itemId, status, tag',
     })
+    // v5（审查 P1-1）：条目主键从 32-bit FNV hex（8 位）升级为 128-bit Murmur3 组合 hex（32 位）。
+    // schema 字符串不变（id 仍是主键），只做存量数据一次性改写：按 url 重算 id、
+    // 重映射 suggestions.itemId、作废 searchIndex 快照（面板打开后按新版本全量重建）。
+    this.version(5).upgrade(async (tx: Transaction) => {
+      const items = tx.table('items')
+      const rows = (await items.toArray()) as StarItem[]
+      const idMap = new Map<string, string>()
+      const rewritten: StarItem[] = []
+      const seen = new Set<string>()
+      for (const row of rows) {
+        const nid = hashId(row.url)
+        idMap.set(row.id, nid)
+        if (seen.has(nid)) continue
+        seen.add(nid)
+        rewritten.push({ ...row, id: nid })
+      }
+      await items.clear()
+      await items.bulkPut(rewritten)
+
+      const suggestions = tx.table('suggestions')
+      const sugg = (await suggestions.toArray()) as TagSuggestion[]
+      if (sugg.length > 0) {
+        await suggestions.clear()
+        await suggestions.bulkPut(
+          sugg.map((s) => {
+            const itemId = idMap.get(s.itemId) ?? s.itemId
+            return { ...s, id: `${itemId}|${s.tag}`, itemId }
+          }),
+        )
+      }
+      await tx.table('searchIndex').clear()
+    })
   }
 }
 
@@ -72,6 +105,23 @@ export async function getAppMeta(): Promise<AppMeta> {
 
 async function saveAppMeta(m: AppMeta): Promise<void> {
   await db.meta.put(metaRow(m))
+}
+
+/**
+ * 由条目全集重算 meta 基线（审查 P0-1）：恢复备份 / 数据修复后使用，
+ * 避免在旧计数上累加导致 total/标签直方图翻倍错乱。
+ */
+export function computeAppMeta(items: StarItem[]): AppMeta {
+  const m: AppMeta = { total: 0, stars: 0, bookmarks: 0, hidden: 0, tagged: 0, tags: {} }
+  for (const it of items) {
+    m.total++
+    if (it.sources.includes('star')) m.stars++
+    if (it.sources.includes('bookmark')) m.bookmarks++
+    if (it.hidden) m.hidden++
+    if ((it.tags?.length ?? 0) > 0) m.tagged++
+    for (const t of it.tags ?? []) m.tags[t] = (m.tags[t] ?? 0) + 1
+  }
+  return m
 }
 
 function dec(m: Record<string, number>, k: string): void {
@@ -155,22 +205,24 @@ function contentChanged(old: StarItem, next: StarItem): boolean {
 }
 
 /**
- * 合并同 id 旧行：保留用户维护字段（tags/notes/summary/hidden/embedded）与 createdAt，
- * 仅在内容字段发生变化时刷新 updatedAt。修复"再次同步会清掉标签/笔记/隐藏标记"的数据丢失。
+ * 合并同 id 旧行：按 USER_FIELDS 白名单保留用户维护字段（tags/notes/summary/hidden/
+ * embedded 与回顾模式的 reviewedAt/reviewCount/reviewSkip —— 审查 P0-2/R7）与 createdAt，
+ * 仅在内容字段发生变化时刷新 updatedAt。修复"再次同步会清掉标签/笔记/回顾进度"的数据丢失。
  */
 function mergePreserving(old: StarItem | undefined, incoming: StarItem): StarItem {
   if (!old) return incoming
   const dirty = contentChanged(old, incoming)
-  return {
+  const merged: StarItem = {
     ...incoming,
-    tags: old.tags,
-    notes: old.notes,
-    summary: old.summary,
-    hidden: old.hidden,
-    embedded: old.embedded,
     createdAt: old.createdAt,
     updatedAt: dirty ? incoming.updatedAt : old.updatedAt,
   }
+  const dst = merged as unknown as Record<string, unknown>
+  const src = old as unknown as Record<string, unknown>
+  for (const f of USER_FIELDS) {
+    if (src[f] !== undefined) dst[f] = src[f]
+  }
+  return merged
 }
 
 export async function upsertItems(items: StarItem[]): Promise<void> {
@@ -192,8 +244,37 @@ export async function upsertItems(items: StarItem[]): Promise<void> {
   })
 }
 
+/**
+ * 备份恢复专用全量重置（审查 P0-1）：同一事务内清空 items/suggestions/activity 三表、
+ * 由导入条目全量重算 meta 基线后整批写入。不再走 upsertItems 的"增量 +1"路径，
+ * 修复"恢复后计数翻倍、AI 建议与动态残留悬空"的问题。
+ * 返回写入的条目数。
+ */
+export async function restoreAllItems(items: StarItem[]): Promise<number> {
+  const CHUNK = 500
+  let written = 0
+  await db.transaction('rw', db.items, db.meta, db.suggestions, db.activity, async () => {
+    await db.items.clear()
+    await db.suggestions.clear()
+    await db.activity.clear()
+    await saveAppMeta(computeAppMeta(items))
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const slice = items.slice(i, i + CHUNK)
+      await db.items.bulkPut(slice)
+      written += slice.length
+    }
+  })
+  return written
+}
+
 export async function getByUrl(url: string): Promise<StarItem | undefined> {
   return db.items.where('url').equals(url).first()
+}
+
+/** 批量按 URL 取已有行（书签批量同步用）。调用方自行分块以避开 anyOf 参数上限。 */
+export async function getByUrls(urls: string[]): Promise<StarItem[]> {
+  if (urls.length === 0) return []
+  return db.items.where('url').anyOf(urls).toArray()
 }
 
 export async function allItems(): Promise<StarItem[]> {
@@ -411,6 +492,10 @@ export async function setSyncState(key: string, value: unknown): Promise<void> {
   await db.syncState.put({ key, value })
 }
 
+/**
+ * 清空全部数据（审查 P2-4）：数据库 + storage.local（含 GitHub Token、标签规则、
+ * UI 偏好、语言设置）。设置页确认弹窗文案会明确列出该范围，调用前务必经用户确认。
+ */
 export async function clearAll(): Promise<void> {
   await db.delete()
   await db.open()

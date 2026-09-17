@@ -32,15 +32,19 @@ describe('normalizeUrl', () => {
 })
 
 describe('hashId', () => {
-  it('稳定且定长', () => {
+  it('稳定且为 128-bit 定长（审查 P1-1：32 位 hex）', () => {
     const h1 = hashId('https://github.com/owner/repo')
     const h2 = hashId('https://github.com/owner/repo')
     expect(h1).toBe(h2)
-    expect(h1).toMatch(/^[0-9a-f]{8}$/)
+    expect(h1).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it('不同 URL 大概率不同', () => {
     expect(hashId('https://a.dev/x')).not.toBe(hashId('https://a.dev/y'))
+  })
+
+  it('大小写不敏感（与 normalizeUrl 协同去重）', () => {
+    expect(hashId('https://A.dev/x')).toBe(hashId('https://a.dev/x'))
   })
 })
 

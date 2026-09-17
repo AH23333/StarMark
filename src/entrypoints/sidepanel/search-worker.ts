@@ -3,6 +3,7 @@ import { getSearchIndex, allItems, hiddenItems, getAppMeta, saveSearchIndex, db 
 import { createMiniSearch, docFromItem, searchOptions } from '~/core/search/indexer'
 import { recentActivity } from '~/core/activity'
 import { compressText, decompressToText, hasDeflate } from '~/core/compress'
+import { sortHitsByPref } from '~/core/search/selectors'
 import type { SearchDoc, StarItem, UIPrefs } from '~/core/types'
 import type { FolderNode, WorkerRequest, WorkerResponse, SearchHit } from '~/core/search/protocol'
 
@@ -10,6 +11,22 @@ let index: MiniSearch<SearchDoc> | null = null
 let ready = false
 let cachedVersion = -1
 let docCount = 0
+
+/*
+ * 全量条目缓存（审查 P2-2 / R6）：MiniSearch 命中不足时的字面兜底、空查询浏览、
+ * buildFolderTree 都要 allItems() 全表加载，旧实现每次按键（120ms 防抖后）都重读
+ * IndexedDB。worker 内维护带 indexVersion 校验的缓存，增量补丁同步维护，全表只在
+ * 版本落后时重新加载一次。
+ */
+let itemsCache: StarItem[] | null = null
+let itemsCacheVersion = -1
+
+async function getItemsCached(): Promise<StarItem[]> {
+  if (itemsCache && itemsCacheVersion === cachedVersion) return itemsCache
+  itemsCache = await allItems()
+  itemsCacheVersion = cachedVersion
+  return itemsCache
+}
 
 /** 指数更新与搜索串行化队列，保证读写顺序且不出竞争 */
 let chain: Promise<unknown> = Promise.resolve()
@@ -58,6 +75,16 @@ async function applyPatch(ids: string[]): Promise<void> {
     if (item) index.add(docFromItem(item))
   }
   docCount = index.documentCount
+  // 同步维护全量缓存：存在则替换/加入，已删除（bulkGet 取不到）则移除
+  if (itemsCache && itemsCacheVersion === cachedVersion) {
+    const byId = new Map(itemsCache.map((x) => [x.id, x]))
+    for (let i = 0; i < ids.length; i++) {
+      const item = items[i]
+      if (item) byId.set(item.id, item)
+      else byId.delete(ids[i]!)
+    }
+    itemsCache = [...byId.values()]
+  }
   schedulePersist()
 }
 
@@ -74,6 +101,9 @@ async function ensureIndex(force = false, version = 0): Promise<void> {
         docCount = saved.docCount ?? 0
         cachedVersion = indexVersion
         ready = true
+        // 快照反序列化路径：条目缓存惰性加载（首次 getItemsCached 时读一次全表）
+        itemsCache = null
+        itemsCacheVersion = cachedVersion
         return
       } catch {
         index = null
@@ -92,6 +122,9 @@ async function ensureIndex(force = false, version = 0): Promise<void> {
   docCount = docs.length
   cachedVersion = indexVersion
   ready = true
+  // 全量重建路径：条目缓存直接复用本次全表数据
+  itemsCache = items
+  itemsCacheVersion = cachedVersion
 
   try {
     const json = JSON.stringify(index.toJSON())
@@ -127,26 +160,6 @@ function itemToHit(item: StarItem): SearchHit {
   }
 }
 
-function sortItems(items: StarItem[], sort: UIPrefs['sort'] | undefined): StarItem[] {
-  const cmp = (a: StarItem, b: StarItem): number => {
-    switch (sort) {
-      case 'starred':
-        return (b.starredAt ?? 0) - (a.starredAt ?? 0)
-      case 'bookmarked':
-        return (b.bookmarkedAt ?? 0) - (a.bookmarkedAt ?? 0)
-      case 'stars':
-        return (b.starMeta?.stars ?? 0) - (a.starMeta?.stars ?? 0)
-      case 'name':
-        return a.title.localeCompare(b.title, 'zh')
-      case 'recent':
-      case 'relevance':
-      default:
-        return (b.createdAt ?? 0) - (a.createdAt ?? 0)
-    }
-  }
-  return [...items].sort(cmp)
-}
-
 async function doSearch(
   q: string,
   max: number,
@@ -154,6 +167,7 @@ async function doSearch(
 ): Promise<{ items: SearchHit[]; total: number }> {
   const needle = (q ?? '').trim().toLowerCase()
   const out: SearchHit[] = []
+  const seenIds = new Set<string>() // 查重 O(1)（原实现对 out 做 O(n) some 扫描）
   const keep = (sources: string[]): boolean => {
     if (opts.source === 'star') return sources.includes('star')
     if (opts.source === 'bookmark') return sources.includes('bookmark')
@@ -182,19 +196,24 @@ async function doSearch(
     if (h.hidden && !opts.includeHidden) return
     if (!keep(h.sources)) return
     if (!hasTags(h.tags)) return
-    if (!out.some((x) => x.id === h.id)) out.push(h)
+    if (!seenIds.has(h.id)) {
+      seenIds.add(h.id)
+      out.push(h)
+    }
   }
 
-  // 空查询 = 浏览模式：列出全部 Star / 书签（应用来源与隐藏过滤 + 标签限定 + 排序）
+  // 空查询 = 浏览模式：列出全部 Star / 书签（应用来源与隐藏过滤 + 标签限定 + 排序）。
+  // 排序统一走 selectors 的 sortHitsByPref（审查 R2，替代此前 worker 内私有 sortItems）。
   if (!needle) {
-    const items = sortItems(
-      (await allItems())
+    const items = sortHitsByPref(
+      (await getItemsCached())
         .filter((i) => !i.hidden || opts.includeHidden)
         .filter((i) => keep(i.sources))
-        .filter((i) => hasTags(i.tags)),
-      opts.sort,
+        .filter((i) => hasTags(i.tags))
+        .map(itemToHit),
+      opts.sort ?? 'recent',
     )
-    return { items: items.slice(0, max).map(itemToHit), total: items.length }
+    return { items: items.slice(0, max), total: items.length }
   }
 
   // 1) MiniSearch 模糊/前缀命中
@@ -206,12 +225,13 @@ async function doSearch(
     }
   }
 
-  // 2) 字面兜底：对当前全部条目做 title·url 包含匹配（保证 Star/书签都能命中）
+  // 2) 字面兜底：对当前全部条目做 title·url 包含匹配（保证 Star/书签都能命中）；
+  //    走版本化缓存（审查 P2-2），不再每次按键全表读 IndexedDB
   if (out.length < max) {
-    const items = await allItems()
+    const items = await getItemsCached()
     for (const item of items) {
       if (out.length >= max) break
-      if (out.some((h) => h.id === item.id)) continue
+      if (seenIds.has(item.id)) continue
       if (!hasTags(item.tags)) continue
       if (item.title.toLowerCase().includes(needle) || item.url.toLowerCase().includes(needle)) {
         push(itemToHit(item))
@@ -233,9 +253,9 @@ async function doSearch(
   return { items: out, total: out.length }
 }
 
-/** 由全部书签条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）。 */
+/** 由全部书签条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）；与兜底扫描共享全量缓存（审查 R6）。 */
 async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
-  const items = (await allItems()).filter((i) => !i.hidden && (!tags || tags.every((t) => (i.tags ?? []).includes(t))))
+  const items = (await getItemsCached()).filter((i) => !i.hidden && (!tags || tags.every((t) => (i.tags ?? []).includes(t))))
   const root: FolderNode = { id: '__root__', name: '', path: '', count: 0, folders: [], items: [] }
   const nodeByPath = new Map<string, FolderNode>()
   nodeByPath.set('', root)
@@ -288,6 +308,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       try {
         if (ids === null) await ensureIndex(true, cachedVersion)
         else if (ids.length > 0) await applyPatch(ids)
+        else schedulePersist() // 空补丁（仅版本号变化）：把快照 version 对齐到最新，避免下次 init 误判失效而全量重建
       } finally {
         self.postMessage({ type: 'ready', indexVersion: cachedVersion, docCount, rebuilt: false } satisfies WorkerResponse)
       }

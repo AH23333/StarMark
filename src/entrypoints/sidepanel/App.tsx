@@ -3,17 +3,23 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import SearchWorker from './search-worker?worker'
 import { sendToBackground } from '~/core/msg'
 import { initTheme } from '~/core/theme'
-import { t, useT } from '~/core/i18n'
-import { CTX_MENU_ACTIONS, type ActivityEntry, type CtxMenuConfig, type ItemEditPatch, type UIPrefs } from '~/core/types'
+import { useT } from '~/core/i18n'
+import { type ActivityEntry, type ItemEditPatch, type UIPrefs } from '~/core/types'
 import { tagColor } from '~/core/tagcolor'
 import type { BatchAction } from '~/core/db'
 import type { ExportFormat } from '~/core/export'
 import type { FolderNode, SearchHit, WorkerResponse } from '~/core/search/protocol'
 import { collectDupIds, collectLanguages, groupHits, type ResultSection } from '~/core/search/selectors'
 import { fetchTrendingCached, type TrendingPeriod, type TrendingRepo, type TrendingResult } from '~/core/trending'
-import { parseRepoFromUrl } from '~/core/convert'
 import { getIndexVersion } from '~/core/version'
 import type { BgState } from '~/core/msg'
+import { BatchBar } from './components/BatchBar'
+import { BrowseNode } from './components/BrowseNode'
+import { ContextMenu } from './components/ContextMenu'
+import { ActivityRow } from './components/ActivityRow'
+import { HiddenCard } from './components/HiddenCard'
+import { ResultCard } from './components/ResultCard'
+import { TrendingView } from './components/TrendingView'
 
 type PanelTab = 'tree' | 'tags' | 'activity' | 'trending' | 'hidden'
 
@@ -77,6 +83,18 @@ export default function App() {
 
   const showNotif = (t: string) => setNotify(t)
 
+  /*
+   * index 失效合并器（二轮性能优化）：相邻多次 bump（如 batch 后 applyRulesToAll、
+   * 书签批量事件）各自触发 onChanged，旧实现每次都新设 500ms 定时器且不清理旧的，
+   * 导致重复/乱序 invalidate。现合并为一次：ids 取并集、遇全量（null/缺失）优先全量。
+   */
+  const pendingInvalidateRef = useRef<{
+    full: boolean
+    ids: Set<string>
+    version: number
+    timer: ReturnType<typeof setTimeout> | null
+  }>({ full: false, ids: new Set(), version: -1, timer: null })
+
   // 初始化 worker + 状态 + 偏好
   useEffect(() => {
     let disposeTheme = () => {}
@@ -127,25 +145,34 @@ export default function App() {
         setIndexVersion(newVersion)
         void loadState()
         const plan = changes.idxPatch?.newValue as { ids?: unknown } | undefined
-        const timer = setTimeout(() => {
-          // 增量更新：有 ids 则只替换这些条目；ids=null 全量重建；ids=[] 仅刷新状态
-          worker.postMessage({
-            type: 'invalidate',
-            ids: Array.isArray(plan?.ids) ? (plan!.ids as string[]) : plan?.ids === null ? null : undefined,
-            version: newVersion,
-          })
+        const p = pendingInvalidateRef.current
+        if (plan?.ids === null || !plan || !('ids' in plan)) {
+          p.full = true // 全量重建 / 补丁计划缺失 → 按全量处理
+        } else if (Array.isArray(plan.ids)) {
+          for (const id of plan.ids as string[]) p.ids.add(id)
+        } else {
+          p.full = true
+        }
+        p.version = newVersion
+        if (p.timer) clearTimeout(p.timer)
+        p.timer = setTimeout(() => {
+          p.timer = null
+          const ids: string[] | null = p.full ? null : [...p.ids]
+          p.full = false
+          p.ids = new Set()
+          worker.postMessage({ type: 'invalidate', ids, version: p.version })
           // 树重建必须携带当前标签限定，否则删除标签后浏览视图会短暂/错误地回落到全部条目
           const tf = tagFiltersRef.current
           worker.postMessage({ type: 'tree', tags: tf.length ? [...tf] : undefined })
           worker.postMessage({ type: 'tags' })
         }, 500)
-        return () => clearTimeout(timer)
       }
     }
     browser.storage.onChanged.addListener(onStorage)
     return () => {
       disposeTheme()
       browser.storage.onChanged.removeListener(onStorage)
+      if (pendingInvalidateRef.current.timer) clearTimeout(pendingInvalidateRef.current.timer)
       worker.terminate()
     }
   }, [])
@@ -310,7 +337,6 @@ export default function App() {
     },
     [batchMode, selected],
   )
-
 
   const openOptions = () => void browser.runtime.openOptionsPage()
 
@@ -685,7 +711,6 @@ export default function App() {
           </>
         )}
 
-
         {!searching && indexReady && tab === 'hidden' && (
           <>
             {hiddenItems.length === 0 ? (
@@ -762,821 +787,4 @@ export default function App() {
       </main>
     </div>
   )
-}
-
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return t('time.justNow')
-  if (m < 60) return t('time.minutesAgo', { m })
-  const h = Math.floor(m / 60)
-  if (h < 24) return t('time.hoursAgo', { h })
-  const d = Math.floor(h / 24)
-  if (d < 30) return t('time.daysAgo', { d })
-  return new Date(ts).toLocaleDateString()
-}
-
-/** 热榜推荐视图：抓取 github.com/trending，一键 Star / 存书签 */
-function TrendingView({
-  list,
-  loading,
-  error,
-  period,
-  starred,
-  meta,
-  onPeriod,
-  onStar,
-  onBookmark,
-  onRefresh,
-}: {
-  list: TrendingRepo[]
-  loading: boolean
-  error: string
-  period: TrendingPeriod
-  starred: Set<string>
-  meta: { fromCache: boolean; fetchedAt?: number; stale: boolean }
-  onPeriod: (p: TrendingPeriod) => void
-  onStar: (r: TrendingRepo) => void
-  onBookmark: (r: TrendingRepo) => void
-  onRefresh: () => void
-}) {
-  return (
-    <div className="trending-wrap">
-      <div className="trending-toolbar">
-        {(
-          [
-            ['daily', t('trending.daily')],
-            ['weekly', t('trending.weekly')],
-            ['monthly', t('trending.monthly')],
-          ] as [TrendingPeriod, string][]
-        ).map(([k, label]) => (
-          <button key={k} className={'seg-btn' + (period === k ? ' on' : '')} onClick={() => onPeriod(k)}>
-            {label}
-          </button>
-        ))}
-        <span className="spacer" />
-        <button className="btn mini" onClick={onRefresh} title={t('trending.refreshTitle')}>
-          ↻ {t('trending.refresh')}
-        </button>
-      </div>
-      {meta.fetchedAt != null && (
-        <div className={'trending-cache' + (meta.stale ? ' stale' : '')}>
-          {meta.fromCache
-            ? t('trending.cachedAt', { time: new Date(meta.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })
-            : t('trending.freshAt', { time: new Date(meta.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })}
-        </div>
-      )}
-
-      {loading && <div className="empty">{t('trending.loading')}</div>}
-      {!loading && error && <div className="empty">{t('trending.error', { err: error })}</div>}
-      {!loading && !error && list.length === 0 && <div className="empty">{t('trending.empty')}</div>}
-
-      {!loading &&
-        !error &&
-        list.map((r, idx) => {
-          const isStarred = starred.has(r.fullName)
-          return (
-            <div key={r.fullName} className="trending-card">
-              <div className="trending-rank">{idx + 1}</div>
-              <div className="trending-body">
-                <div className="trending-title" onClick={() => void browser.tabs.create({ url: r.url, active: false })}>
-                  {r.fullName}
-                </div>
-                {r.description && <div className="trending-desc">{r.description}</div>}
-                <div className="trending-meta">
-                  {r.language && <span className="trending-lang">{r.language}</span>}
-                  <span>★ {r.stars.toLocaleString()}</span>
-                  {typeof r.starsToday === 'number' && (
-                    <span className="trending-today">＋{r.starsToday.toLocaleString()} {t('trending.starsToday')}</span>
-                  )}
-                </div>
-              </div>
-              <div className="trending-actions">
-                <button
-                  className={'btn mini' + (isStarred ? ' on' : '')}
-                  disabled={isStarred}
-                  title={isStarred ? t('trending.alreadyStarred') : t('trending.star')}
-                  onClick={() => onStar(r)}
-                >
-                  {isStarred ? '★' : '☆'} {isStarred ? t('trending.starred') : t('trending.star')}
-                </button>
-                <button className="btn mini" title={t('trending.saveBookmark')} onClick={() => onBookmark(r)}>
-                  🔖+
-                </button>
-              </div>
-            </div>
-          )
-        })}
-    </div>
-  )
-}
-
-/** 批量操作条：多选后的统一动作入口（加标签 / 隐藏 / 删除 / 导出所选） */
-function BatchBar({
-  count,
-  onAddTags,
-  onHide,
-  onUnhide,
-  onDelete,
-  onExport,
-  onExit,
-  allTags,
-}: {
-  count: number
-  onAddTags: (tags: string[]) => void
-  onHide: () => void
-  onUnhide: () => void
-  onDelete: () => void
-  onExport: (fmt: ExportFormat) => void
-  onExit: () => void
-  allTags: string[]
-}) {
-  const [tagDraft, setTagDraft] = useState('')
-  const [editingTags, setEditingTags] = useState(false)
-
-  const submitTags = () => {
-    const tags = tagDraft
-      .split(/[,，\s]+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-    if (tags.length > 0) onAddTags(tags)
-    setTagDraft('')
-    setEditingTags(false)
-  }
-
-  return (
-    <div className="batch-bar">
-      <div className="batch-row">
-        <span className="batch-count">{t('batch.selected', { n: count })}</span>
-        <button className="btn mini" onClick={() => setEditingTags((v) => !v)} title={t('batch.addTagsTitle')}>
-          🏷 {t('batch.addTags')}
-        </button>
-        <button className="btn mini" onClick={onHide} title={t('batch.hideTitle')}>
-          👁 {t('batch.hide')}
-        </button>
-        <button className="btn mini" onClick={onUnhide} title={t('batch.unhideTitle')}>
-          🙈 {t('batch.unhide')}
-        </button>
-        <button className="btn mini danger" onClick={onDelete} title={t('batch.deleteTitle')}>
-          🗑 {t('batch.delete')}
-        </button>
-        <details className="export-dd">
-          <summary className="btn mini" title={t('export.selectedTitle')}>
-            ⇩ {t('export.selected')}
-          </summary>
-          <div className="export-menu">
-            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('markdown') }}>{t('export.markdown')}</button>
-            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('html') }}>{t('export.html')}</button>
-            <button onClick={(e) => { e.currentTarget.closest('details')?.removeAttribute('open'); onExport('csv') }}>{t('export.csv')}</button>
-          </div>
-        </details>
-        <button className="btn mini" onClick={onExit} title={t('batch.exitTitle')}>
-          ✕
-        </button>
-      </div>
-      {editingTags && (
-        <div className="batch-row">
-          <input
-            className="batch-input"
-            autoFocus
-            value={tagDraft}
-            placeholder={t('batch.tagsPlaceholder')}
-            onChange={(e) => setTagDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submitTags()
-              if (e.key === 'Escape') setEditingTags(false)
-            }}
-          />
-          <button className="btn mini primary" onClick={submitTags}>
-            {t('common.save')}
-          </button>
-          {allTags.length > 0 && (
-            <div className="batch-suggest">
-              {allTags.slice(0, 16).map((tg) => (
-                <button
-                  key={tg}
-                  className="tag"
-                  style={{ color: tagColor(tg) }}
-                  onClick={() => setTagDraft(tagDraft.trim() ? `${tagDraft.trim()}, ${tg}` : tg)}
-                >
-                  +{tg}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const ACT_ICON: Record<string, string> = {
-  star_add: '⭐＋',
-  star_remove: '⭐－',
-  bookmark_add: '🔖＋',
-  bookmark_remove: '🔖－',
-}
-
-function ActivityRow({ entry }: { entry: ActivityEntry }) {
-  return (
-    <li className="act-row" onClick={() => void browser.tabs.create({ url: entry.url, active: false })}>
-      <span className="act-icon">{ACT_ICON[entry.kind] ?? entry.kind}</span>
-      <div className="act-body">
-        <div className="act-title">{entry.title || entry.url}</div>
-        <div className="act-meta">{relativeTime(entry.at)}</div>
-      </div>
-      <span className="act-fav" />
-    </li>
-  )
-}
-
-function HiddenCard({
-  hit,
-  onRestore,
-  showAvatar,
-}: {
-  hit: SearchHit
-  onRestore: () => void
-  showAvatar?: boolean
-}) {
-  const open = () => void browser.tabs.create({ url: hit.url, active: false })
-  return (
-    <div className="card dim">
-      <div className="card-head" onClick={open}>
-        {showAvatar !== false && <Favicon hit={hit} />}
-        <span className="card-title-text">{hit.title}</span>
-      </div>
-      <div className="card-url">{hit.url}</div>
-      <div className="card-actions">
-        <button className="btn" onClick={onRestore}>
-          {t('hidden.restore')}
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function sortHits(list: SearchHit[], sort: UIPrefs['sort']): SearchHit[] {
-  const cmp = (a: SearchHit, b: SearchHit): number => {
-    switch (sort) {
-      case 'starred':
-        return (b.starredAt ?? 0) - (a.starredAt ?? 0)
-      case 'bookmarked':
-        return (b.bookmarkedAt ?? 0) - (a.bookmarkedAt ?? 0)
-      case 'stars':
-        return (b.stars ?? 0) - (a.stars ?? 0)
-      case 'name':
-        return a.title.localeCompare(b.title, 'zh')
-      case 'recent':
-      case 'relevance':
-      default:
-        return (b.createdAt ?? 0) - (a.createdAt ?? 0)
-    }
-  }
-  return [...list].sort(cmp)
-}
-
-/** 收藏夹树节点：默认折叠，点击展开；条目渲染为全功能结果卡 */
-function BrowseNode({
-  node,
-  prefs,
-  languageFilter,
-  query,
-  dupIds,
-  onUpdate,
-  onTagClick,
-  onCtx,
-  allTags,
-  batchMode,
-  selected,
-  onSelect,
-  onConvert,
-}: {
-  node: FolderNode
-  prefs: UIPrefs
-  languageFilter: string
-  query: string
-  dupIds: Set<string>
-  onUpdate: (id: string, patch: ItemEditPatch) => void
-  onTagClick: (tag: string) => void
-  onCtx: (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => void
-  allTags?: string[]
-  batchMode?: boolean
-  selected?: Set<string>
-  onSelect?: (id: string, on: boolean) => void
-  onConvert?: (hit: SearchHit, kind: 'toBookmark' | 'toStar') => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [shown, setShown] = useState(100)
-
-  const visible = useMemo(() => {
-    let list = node.items.filter((it) => prefs.showHidden || !it.hidden)
-    if (languageFilter) list = list.filter((it) => it.language === languageFilter)
-    return sortHits(list, prefs.sort)
-  }, [node.items, prefs.showHidden, prefs.sort, languageFilter])
-
-  const total = node.kind === 'stars' ? node.items.length : node.count
-
-  return (
-    <div className="t-node">
-      <button className="tree-row" onClick={() => setOpen((o) => !o)} title={node.path || node.name}>
-        <span className="tree-arrow">{open ? '▾' : '▸'}</span>
-        <span className="tree-name">
-          {node.kind === 'stars' ? '⭐' : '📁'} {node.kind === 'stars' ? t('tree.allStars') : node.name}
-        </span>
-        <span className="tree-count">{total}</span>
-      </button>
-      {open && (
-        <div className="tree-children">
-          {visible.slice(0, shown).map((h) => (
-            <ResultCard
-              key={h.id}
-              hit={h}
-              query={query}
-              isDup={dupIds.has(h.id)}
-              onUpdate={onUpdate}
-              onTagClick={onTagClick}
-              onContextMenu={(e) => onCtx(e, h)}
-              showAvatar={prefs.letterAvatar !== false}
-              allTags={allTags}
-              selectable={batchMode}
-              selected={selected?.has(h.id)}
-              onSelect={(on) => onSelect?.(h.id, on)}
-              onConvert={onConvert}
-            />
-          ))}
-          {shown < visible.length && (
-            <button className="load-more" onClick={() => setShown((s) => s + 100)}>
-              {t('loadMore', { n: visible.length - shown })}
-            </button>
-          )}
-          {node.folders.map((f) => (
-            <BrowseNode
-              key={`${f.path}|${f.id}`}
-              node={f}
-              prefs={prefs}
-              languageFilter={languageFilter}
-              query={query}
-              dupIds={dupIds}
-              onUpdate={onUpdate}
-              onTagClick={onTagClick}
-              onCtx={onCtx}
-              allTags={allTags}
-              batchMode={batchMode}
-              selected={selected}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** 侧边栏自有右键菜单：随偏好开关渲染条目，支持内联编辑标签/备注 */
-function ContextMenu({
-  menu,
-  prefs,
-  onClose,
-  onUpdate,
-  notify,
-  suggestTags,
-}: {
-  menu: { x: number; y: number; hit: SearchHit }
-  prefs: UIPrefs
-  onClose: () => void
-  onUpdate: (id: string, patch: ItemEditPatch) => void
-  notify: (t: string) => void
-  suggestTags?: string[]
-}) {
-  const [editing, setEditing] = useState<'tags' | 'note' | null>(null)
-  const [draft, setDraft] = useState('')
-  const ref = useRef<HTMLDivElement | null>(null)
-  const hit = menu.hit
-
-  useEffect(() => {
-    const close = () => onClose()
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    const onPointer = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) close()
-    }
-    // 面板滚动时收起菜单；但正在编辑（输入框有焦点 / 菜单内部滚动）时绝不因滚动而退出
-    const onScroll = (e: Event) => {
-      const t = e.target as Node
-      if (ref.current?.contains(t)) return
-      if (ref.current?.contains(document.activeElement)) return
-      if (editing) return
-      close()
-    }
-    document.addEventListener('pointerdown', onPointer, true)
-    document.addEventListener('keydown', onKey)
-    window.addEventListener('resize', close)
-    window.addEventListener('scroll', onScroll, true)
-    return () => {
-      document.removeEventListener('pointerdown', onPointer, true)
-      document.removeEventListener('keydown', onKey)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('scroll', onScroll, true)
-    }
-  }, [onClose, editing])
-
-  const cfg = prefs.ctxMenu ?? {}
-  const enabled = (k: keyof CtxMenuConfig): boolean => cfg[k] !== false
-  const actions = CTX_MENU_ACTIONS.filter((a) => enabled(a.key))
-
-  const startEdit = (kind: 'tags' | 'note') => {
-    setEditing(kind)
-    setDraft(kind === 'note' ? (hit.notes ?? '') : (hit.tags ?? []).join(', '))
-  }
-  const save = () => {
-    if (editing === 'note') void onUpdate(hit.id, { notes: draft.trim() })
-    if (editing === 'tags') {
-      void onUpdate(hit.id, {
-        tags: draft
-          .split(/[,，\s]+/)
-          .map((t) => t.trim())
-          .filter(Boolean),
-      })
-    }
-    onClose()
-  }
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text)
-      notify(t('ctx.copied'))
-    } catch {
-      notify(t('ctx.copyFailed'))
-    }
-    onClose()
-  }
-
-  const left = Math.min(menu.x, Math.max(0, window.innerWidth - 220))
-  const top = Math.min(menu.y, Math.max(0, window.innerHeight - 300))
-
-  const run = (key: string): void => {
-    if (key === 'open') {
-      void browser.tabs.create({ url: hit.url, active: false })
-      onClose()
-    } else if (key === 'copyUrl') {
-      void copy(hit.url)
-    } else if (key === 'copyTitle') {
-      void copy(hit.title)
-    } else if (key === 'hide') {
-      void onUpdate(hit.id, { hidden: !hit.hidden })
-      onClose()
-    }
-  }
-
-  const icon = (key: string): string => {
-    if (key === 'open') return '↗ '
-    if (key === 'copyUrl') return '⧉ '
-    if (key === 'copyTitle') return '✂ '
-    if (key === 'tags') return '🏷 '
-    if (key === 'note') return '📝 '
-    return hit.hidden ? '🙈 ' : '👁 '
-  }
-
-  return (
-    <div className="ctx-menu" ref={ref} style={{ left, top }}>
-      {actions.map((a) => {
-        if (a.key !== 'tags' && a.key !== 'note') {
-          return (
-            <button key={a.key} className="ctx-item" onClick={() => run(a.key)}>
-              {icon(a.key)}
-              {a.key === 'hide' ? (hit.hidden ? t('hidden.restore') : t(`ctx.${a.key}`)) : t(`ctx.${a.key}`)}
-            </button>
-          )
-        }
-        return (
-          <button key={a.key} className="ctx-item" onClick={() => startEdit(a.key as 'tags' | 'note')}>
-            {icon(a.key)}
-            {t(`ctx.${a.key}`)}
-          </button>
-        )
-      })}
-
-      {editing && (
-        <div className="ctx-editor">
-          {editing === 'note' ? (
-            <textarea rows={3} value={draft} autoFocus placeholder={t('ctx.editorNotePlaceholder')} onChange={(e) => setDraft(e.target.value)} />
-          ) : (
-            <>
-              {(() => {
-                const draftTags = draft
-                  .split(/[,，\s]+/)
-                  .map((t) => t.trim())
-                  .filter(Boolean)
-                return draftTags.length > 0 ? (
-<div className="tag-chip-row">
-                    {draftTags.map((tg, i) => (
-                      <button
-                        key={`${tg}-${i}`}
-                        className="chip"
-                        style={{ color: tagColor(tg) }}
-                        onClick={() =>
-                          setDraft(
-                            draftTags
-                              .filter((x) => x !== tg)
-                              .join(', '),
-                          )
-                        }
-                        title={t('ctx.deleteTagTitle')}
-                      >
-                        #{tg} <span className="chip-x">✕</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null
-              })()}
-              <input value={draft} autoFocus placeholder={t('ctx.editorTagsPlaceholder')} onChange={(e) => setDraft(e.target.value)} />
-              {suggestTags && suggestTags.length > 0 && (
-                <div className="suggest-row">
-                  <span className="suggest-label">{t('ctx.suggestLabel')}</span>
-                  {suggestTags
-                    .filter((t) => !(hit.tags ?? []).includes(t) && !draft.split(/[,，\s]+/).map((x) => x.trim()).includes(t))
-                    .slice(0, 24)
-                    .map((t) => (
-                      <button
-                        key={t}
-                        className="tag suggest"
-                        style={{ color: tagColor(t) }}
-                        onClick={() => setDraft(draft.trim() ? `${draft.trim()}, ${t}` : t)}
-                      >
-                        +{t}
-                      </button>
-                    ))}
-                </div>
-              )}
-            </>
-          )}
-          <div className="row-btns">
-            <button className="btn primary" onClick={save}>
-              {t('common.save')}
-            </button>
-            <button className="btn" onClick={() => setEditing(null)}>
-              {t('common.cancel')}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function Favicon({ hit }: { hit: SearchHit }) {
-  const host = safeHost(hit.url) || '?'
-  const letter = host[0]?.toUpperCase() ?? '?'
-  // 槽位始终被字母占位填满（无空白缩进）；友好的 <img> 加载完成后叠在上层，
-  // 加载失败（如 s2 404）则隐藏图片、保留字母。懒加载避免大量并发请求。
-  return (
-    <span className="favicon fav-slot" style={{ background: tagColor(hit.url) }} title={host}>
-      <span className="fav-letter">{letter}</span>
-      {hit.favicon && (
-        <img
-          className="favicon-img"
-          src={hit.favicon}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          onError={(e) => ((e.target as HTMLImageElement).style.display = 'none')}
-        />
-      )}
-    </span>
-  )
-}
-
-function safeHost(url: string): string {
-  try {
-    return new URL(url).hostname
-  } catch {
-    return ''
-  }
-}
-
-function ResultCard({
-  hit,
-  query,
-  isDup,
-  onUpdate,
-  onTagClick,
-  onContextMenu,
-  showAvatar,
-  allTags,
-  selectable,
-  selected,
-  onSelect,
-  onConvert,
-}: {
-  hit: SearchHit
-  query: string
-  isDup: boolean
-  onUpdate: (id: string, patch: ItemEditPatch) => void
-  onTagClick: (tag: string) => void
-  onContextMenu?: (e: ReactMouseEvent<HTMLDivElement>) => void
-  showAvatar?: boolean
-  allTags?: string[]
-  selectable?: boolean
-  selected?: boolean
-  onSelect?: (on: boolean) => void
-  onConvert?: (hit: SearchHit, kind: 'toBookmark' | 'toStar') => void
-}) {
-  const open = () => void browser.tabs.create({ url: hit.url, active: false })
-  const [editing, setEditing] = useState<'note' | 'tags' | null>(null)
-  const [draft, setDraft] = useState('')
-  const canToBookmark = Boolean(onConvert) && !hit.sources.includes('bookmark')
-  const canToStar = Boolean(onConvert) && !hit.sources.includes('star') && parseRepoFromUrl(hit.url) != null
-
-  const startEdit = (kind: 'note' | 'tags') => {
-    setEditing(kind)
-    setDraft(kind === 'note' ? (hit.notes ?? '') : (hit.tags ?? []).join(', '))
-  }
-  const save = () => {
-    if (editing === 'note') {
-      void onUpdate(hit.id, { notes: draft.trim() })
-    } else if (editing === 'tags') {
-      void onUpdate(hit.id, {
-        tags: draft
-          .split(/[,，\s]+/)
-          .map((t) => t.trim())
-          .filter(Boolean),
-      })
-    }
-    setEditing(null)
-  }
-
-  return (
-    <div className={hit.hidden ? 'card dim' : 'card'} onContextMenu={onContextMenu}>
-      <div className="card-head" onClick={selectable ? () => onSelect?.(!selected) : open}>
-        {selectable && (
-          <input
-            type="checkbox"
-            className="card-check"
-            checked={Boolean(selected)}
-            onChange={(e) => onSelect?.(e.target.checked)}
-            onClick={(e) => e.stopPropagation()}
-          />
-        )}
-        {showAvatar !== false && <Favicon hit={hit} />}
-        <span
-          className="card-title"
-          dangerouslySetInnerHTML={{ __html: highlight(hit.title, query) }}
-        />
-      </div>
-      <div className="card-sub" onClick={open}>
-        {hit.language && (
-          <span className="card-line">
-            {hit.language}
-            {typeof hit.stars === 'number' && hit.stars > 0 && ` · ★ ${hit.stars.toLocaleString()}`}
-          </span>
-        )}
-        <span className="card-url">{hostOnly(hit.url)}</span>
-      </div>
-      <div className="card-sub" onClick={open}>
-        {hit.description && hit.description.length > 0 ? (
-          <span className="card-line desc-line">{hit.description}</span>
-        ) : null}
-        {hit.notes ? <span className="card-line note-line">📝 {hit.notes}</span> : null}
-      </div>
-
-      {editing === 'note' && (
-        <div className="inline-edit">
-          <textarea
-            rows={2}
-            value={draft}
-            autoFocus
-            placeholder={t('note.placeholder')}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <div className="row-btns">
-            <button className="btn primary" onClick={save}>
-              {t('common.save')}
-            </button>
-            <button className="btn" onClick={() => setEditing(null)}>
-              {t('common.cancel')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {editing === 'tags' && (
-        <div className="inline-edit">
-          {(() => {
-            const draftTags = draft
-              .split(/[,，\s]+/)
-              .map((t) => t.trim())
-              .filter(Boolean)
-            return draftTags.length > 0 ? (
-              <div className="tag-chip-row">
-                {draftTags.map((tg, i) => (
-                  <button
-                    key={`${tg}-${i}`}
-                    className="chip"
-                    style={{ color: tagColor(tg) }}
-                    onClick={() =>
-                      setDraft(
-                        draftTags
-                          .filter((x) => x !== tg)
-                          .join(', '),
-                      )
-                    }
-                    title={t('ctx.deleteTagTitle')}
-                  >
-                    #{tg} <span className="chip-x">✕</span>
-                  </button>
-                ))}
-              </div>
-            ) : null
-          })()}
-          <input value={draft} autoFocus placeholder={t('ctx.editorTagsPlaceholder')} onChange={(e) => setDraft(e.target.value)} />
-          {allTags && allTags.length > 0 && (
-            <div className="suggest-row">
-              <span className="suggest-label">{t('ctx.suggestLabel')}</span>
-              {allTags
-                .filter((t) => !(hit.tags ?? []).includes(t) && !draft.split(/[,，\s]+/).map((x) => x.trim()).includes(t))
-                .slice(0, 24)
-                .map((t) => (
-                  <button
-                    key={t}
-                    className="tag suggest"
-                    style={{ color: tagColor(t) }}
-                    onClick={() => setDraft(draft.trim() ? `${draft.trim()}, ${t}` : t)}
-                  >
-                    +{t}
-                  </button>
-                ))}
-            </div>
-          )}
-          <div className="row-btns">
-            <button className="btn primary" onClick={save}>
-              {t('common.save')}
-            </button>
-            <button className="btn" onClick={() => setEditing(null)}>
-              {t('common.cancel')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="card-meta">
-        {hit.sources.includes('star') && <span className="badge star">{t('badge.star')}</span>}
-        {hit.sources.includes('bookmark') && <span className="badge bm">{t('badge.bookmark')}</span>}
-        {isDup && <span className="badge dup" title={t('badge.dupTitle')}>{t('badge.dup')}</span>}
-        {hit.tags && hit.tags.length > 0 && (
-          <div className="tag-row">
-            {hit.tags.map((tg) => (
-              <button key={tg} className="tag" style={{ color: tagColor(tg) }} onClick={() => onTagClick(tg)} title={t('tag.search', { tag: tg })}>
-                #{tg}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="spacer" />
-        <button className="btn mini" title={t('edit.noteTitle')} onClick={() => (editing === 'note' ? save() : startEdit('note'))}>
-          ✏️
-        </button>
-        <button className="btn mini" title={t('edit.tagsTitle')} onClick={() => (editing === 'tags' ? save() : startEdit('tags'))}>
-          🏷
-        </button>
-        <button
-          className="btn mini"
-          title={hit.hidden ? t('hidden.restore') : t('hide.hide')}
-          onClick={() => void onUpdate(hit.id, { hidden: !hit.hidden })}
-        >
-          {hit.hidden ? '🙈' : '👁'}
-        </button>
-        {canToBookmark && (
-          <button className="btn mini" title={t('convert.toBookmark.title')} onClick={() => onConvert?.(hit, 'toBookmark')}>
-            🔖+
-          </button>
-        )}
-        {canToStar && (
-          <button className="btn mini" title={t('convert.toStar.title')} onClick={() => onConvert?.(hit, 'toStar')}>
-            ⭐+
-          </button>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function hostOnly(url: string): string {
-  try {
-    return new URL(url).hostname
-  } catch {
-    return url
-  }
-}
-
-function highlight(text: string, query: string): string {
-  const q = query.trim()
-  if (!q) return escapeHtml(text)
-  const idx = text.toLowerCase().indexOf(q.toLowerCase())
-  if (idx < 0) return escapeHtml(text)
-  return `${escapeHtml(text.slice(0, idx))}<mark>${escapeHtml(text.slice(idx, idx + q.length))}</mark>${escapeHtml(text.slice(idx + q.length))}`
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
