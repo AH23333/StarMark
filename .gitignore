@@ -3,3 +3,6 @@ node_modules/
 .wxt/
 *.log
 .DS_Store
+.tmp-*.txt
+.tmp-*.json
+scripts/dbg.*
