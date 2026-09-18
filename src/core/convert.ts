@@ -15,14 +15,32 @@ interface BmTreeNode {
   children?: BmTreeNode[]
 }
 
-/** 定位（或创建）收藏专用文件夹，返回其 id。 */
+/**
+ * 定位/创建「StarMark 收藏」收藏夹（代码洞察 G3）：首次创建后把 folder id 记到
+ * storage.local（`collectFolderId`），之后按 id 定位——用户改了文件夹名也不会重复创建。
+ * id 失效（用户删除文件夹）时按名字回退查找并重建映射。
+ */
 export async function ensureCollectFolder(): Promise<string> {
+  const { collectFolderId } = (await browser.storage.local.get('collectFolderId')) as { collectFolderId?: string }
+  if (collectFolderId) {
+    try {
+      const res = (await browser.bookmarks.get(collectFolderId)) as unknown as BmTreeNode[] | BmTreeNode
+      const node = Array.isArray(res) ? res[0] : res
+      if (node && !node.url) return node.id
+    } catch {
+      // id 失效（文件夹被删除），走名字回退
+    }
+  }
   const tree = (await browser.bookmarks.getTree()) as unknown as BmTreeNode[]
   const bar = tree[0]?.children?.[0]
   if (!bar) throw new Error('书签栏不可用')
   const existing = bar.children?.find((n) => !n.url && n.title === COLLECT_FOLDER_TITLE)
-  if (existing?.id) return existing.id
+  if (existing?.id) {
+    await browser.storage.local.set({ collectFolderId: existing.id })
+    return existing.id
+  }
   const created = (await browser.bookmarks.create({ parentId: bar.id, title: COLLECT_FOLDER_TITLE })) as { id: string }
+  await browser.storage.local.set({ collectFolderId: created.id })
   return created.id
 }
 

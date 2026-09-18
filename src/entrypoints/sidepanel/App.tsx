@@ -65,7 +65,7 @@ export default function App() {
   const [trendingLoading, setTrendingLoading] = useState(false)
   const [trendingError, setTrendingError] = useState('')
   const [starredRepos, setStarredRepos] = useState<Set<string>>(new Set())
-  const [trendingMeta, setTrendingMeta] = useState<{ fromCache: boolean; fetchedAt?: number; stale: boolean }>({ fromCache: false, stale: false })
+  const [trendingMeta, setTrendingMeta] = useState<{ fromCache: boolean; fetchedAt?: number; stale: boolean; via?: 'trending-html' | 'search-api' }>({ fromCache: false, stale: false })
   const [prefs, setPrefs] = useState<UIPrefs>(DEFAULT_PREFS)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null)
   const lastParamsRef = useRef<{
@@ -380,7 +380,7 @@ export default function App() {
       void fetchTrendingCached(trendingPeriod, undefined, { force })
         .then((res: TrendingResult) => {
           setTrendingList(res.list)
-          setTrendingMeta({ fromCache: res.fromCache, fetchedAt: res.fetchedAt, stale: res.stale })
+          setTrendingMeta({ fromCache: res.fromCache, fetchedAt: res.fetchedAt, stale: res.stale, via: res.via })
           if (res.stale) showNotif(t('trending.staleNotice'))
         })
         .catch((e) => setTrendingError((e as Error).message))

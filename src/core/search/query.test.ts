@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest'
+import { browseItems, literalFallback, enrichHits, itemToHit } from './query'
+import type { SearchHit } from './protocol'
+import type { StarItem } from '../types'
+
+function item(over: Partial<StarItem> & { id: string; url: string }): StarItem {
+  return {
+    title: over.id,
+    description: '',
+    sources: ['star'],
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...over,
+  }
+}
+
+const items: StarItem[] = [
+  item({ id: 'a', url: 'https://github.com/foo/bar', title: 'Foo Bar', tags: ['dev'], starMeta: { language: 'TypeScript', stars: 100 } as StarItem['starMeta'] }),
+  item({ id: 'b', url: 'https://example.com/docs', title: 'Docs', sources: ['bookmark'], tags: ['read'], bookmarkMeta: { folderPaths: ['书签栏'], folderIds: ['f1'] } }),
+  item({ id: 'c', url: 'https://hidden.dev/x', title: 'Hidden', hidden: true }),
+  item({ id: 'd', url: 'https://github.com/two/words', title: 'Two Words', tags: ['dev', 'read'] }),
+]
+
+describe('browseItems（浏览模式纯函数）', () => {
+  it('默认列出全部非隐藏条目并按 createdAt 降序（稳定排序保持同分原序）', () => {
+    const r = browseItems(items, { max: 10 })
+    expect(r.total).toBe(3)
+    expect(r.hits.map((h) => h.id)).toEqual(['a', 'b', 'd'])
+  })
+
+  it('来源过滤：star 只留 Star，bookmark 只留书签', () => {
+    expect(browseItems(items, { max: 10, source: 'star' }).total).toBe(2)
+    expect(browseItems(items, { max: 10, source: 'bookmark' }).hits.map((h) => h.id)).toEqual(['b'])
+  })
+
+  it('隐藏条目默认不出，includeHidden 放行', () => {
+    expect(browseItems(items, { max: 10 }).total).toBe(3)
+    expect(browseItems(items, { max: 10, includeHidden: true }).total).toBe(4)
+  })
+
+  it('标签 AND 限定与截断', () => {
+    expect(browseItems(items, { max: 10, tags: ['dev'] }).hits.map((h) => h.id)).toEqual(['a', 'd'])
+    expect(browseItems(items, { max: 10, tags: ['dev', 'read'] }).hits.map((h) => h.id)).toEqual(['d'])
+    const r = browseItems(items, { max: 2 })
+    expect(r.total).toBe(3)
+    expect(r.hits).toHaveLength(2)
+  })
+})
+
+describe('literalFallback（字面兜底）', () => {
+  it('seen 中的条目被跳过（MiniSearch 已命中的不重复收集）', () => {
+    const out: SearchHit[] = []
+    const seen = new Set(['a'])
+    literalFallback(items, 'bar', { max: 10 }, seen, out)
+    expect(out.map((h) => h.id)).toEqual([]) // 'a' 的 url 含 bar 但已在 seen
+  })
+
+  it('needle 匹配 title 或 url，隐藏与来源过滤生效', () => {
+    const out: SearchHit[] = []
+    literalFallback(items, 'docs', { max: 10 }, new Set(), out)
+    expect(out.map((h) => h.id)).toEqual(['b'])
+
+    const out2: SearchHit[] = []
+    literalFallback(items, 'hidden', { max: 10 }, new Set(), out2)
+    expect(out2).toEqual([])
+
+    const out3: SearchHit[] = []
+    literalFallback(items, 'hidden', { max: 10, includeHidden: true }, new Set(), out3)
+    expect(out3.map((h) => h.id)).toEqual(['c'])
+  })
+})
+
+describe('enrichHits / itemToHit', () => {
+  it('从完整条目回填 description/notes', () => {
+    const hit = itemToHit(items[0]!)
+    const full = new Map([['a', item({ id: 'a', url: 'https://github.com/foo/bar', title: 'Foo Bar', description: 'desc here', notes: 'note here' })]])
+    enrichHits([hit], full)
+    expect(hit.description).toBe('desc here')
+    expect(hit.notes).toBe('note here')
+  })
+
+  it('空 Map 静默跳过', () => {
+    const hit = itemToHit(items[0]!)
+    enrichHits([hit], new Map())
+    expect(hit.description).toBe('')
+  })
+})

@@ -307,5 +307,6 @@
   "opt.ai.clsResuming": "Resuming from checkpoint…",
   "opt.ai.clsStalled": "Task appears to have been interrupted by the browser (heartbeat timeout). Click \"Resume Organize\" to continue",
   "opt.ai.pendingCleanup": "Found {n} legacy suggestions awaiting review (from the old per-item feature)",
-  "opt.ai.pendingClear": "Clear"
+  "opt.ai.pendingClear": "Clear",
+  "trending.searchApiFallback": "Page parsing unavailable, fell back to GitHub Search API (data may differ slightly)"
 }

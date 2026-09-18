@@ -1,5 +1,6 @@
 ﻿import { browser } from 'wxt/browser'
 import { KEEPALIVE_MS } from '../constants'
+import { OllamaConnectError, OllamaOriginError } from '../errors'
 
 /**
  * LLM Provider 抽象（开发技术文档 §17）：用户自带 Key（BYOK），默认关闭。
@@ -286,12 +287,12 @@ async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false
     // 用户主动中止（暂停）：原样透传 AbortError，让上层按"优雅停止"处理
     if ((e as Error).name === 'AbortError') throw e
     // fetch 层失败（连接拒绝 / IPv6 歧义 / 浏览器策略拦截）：给可操作的上下文
-    throw new Error(`无法连接本地 Ollama（${base}）：${(e as Error).message}。请确认已运行 ollama serve，且地址/端口正确`)
+    throw new OllamaConnectError(base, (e as Error).message)
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     if (res.status === 404) throw new Error('Ollama 端点不存在（已尝试 ' + base + '/api/chat）：请确认服务已启动（ollama serve）且地址正确')
-    if (res.status === 403) throw new Error(ollamaOriginHint())
+    if (res.status === 403) throw new OllamaOriginError(ollamaOriginHint())
     throw new Error(`Ollama 请求失败 (${base}/api/chat -> ${res.status}) ${detail.slice(0, 160)}`)
   }
   const data = (await res.json()) as { message?: { content?: string } }
@@ -303,7 +304,7 @@ export async function listOllamaModels(settings: AiSettings): Promise<string[]> 
   const base = await ollamaBaseUrlOf(settings)
   const res = await fetch(`${base}/api/tags`)
   if (!res.ok) {
-    if (res.status === 403) throw new Error(ollamaOriginHint())
+    if (res.status === 403) throw new OllamaOriginError(ollamaOriginHint())
     throw new Error(`Ollama 连接失败 (${base}/api/tags -> ${res.status})`)
   }
   const data = (await res.json()) as { models?: { name: string }[] }

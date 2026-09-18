@@ -5,6 +5,8 @@ import { createMiniSearch, docFromItem, searchOptions } from '~/core/search/inde
 import { recentActivity } from '~/core/activity'
 import { compressText, decompressToText, hasDeflate } from '~/core/compress'
 import { sortHitsByPref } from '~/core/search/selectors'
+import { makeSourceFilter, makeTagFilter } from '~/core/search/filters'
+import { browseItems, literalFallback, enrichHits, itemToHit } from '~/core/search/query'
 import type { SearchDoc, StarItem, UIPrefs } from '~/core/types'
 import type { FolderNode, WorkerRequest, WorkerResponse, SearchHit } from '~/core/search/protocol'
 
@@ -142,25 +144,6 @@ async function ensureIndex(force = false, version = 0): Promise<void> {
   }
 }
 
-function itemToHit(item: StarItem): SearchHit {
-  return {
-    id: item.id,
-    url: item.url,
-    title: item.title,
-    sources: item.sources,
-    description: item.description,
-    notes: item.notes,
-    tags: item.tags,
-    language: item.starMeta?.language,
-    stars: item.starMeta?.stars,
-    starredAt: item.starredAt,
-    bookmarkedAt: item.bookmarkedAt,
-    createdAt: item.createdAt,
-    hidden: Boolean(item.hidden),
-    favicon: item.faviconUrl,
-  }
-}
-
 async function doSearch(
   q: string,
   max: number,
@@ -169,12 +152,8 @@ async function doSearch(
   const needle = (q ?? '').trim().toLowerCase()
   const out: SearchHit[] = []
   const seenIds = new Set<string>() // 查重 O(1)（原实现对 out 做 O(n) some 扫描）
-  const keep = (sources: string[]): boolean => {
-    if (opts.source === 'star') return sources.includes('star')
-    if (opts.source === 'bookmark') return sources.includes('bookmark')
-    return true
-  }
-  const hasTags = (tags: string[] | undefined | null): boolean => !opts.tags || opts.tags.every((t) => (tags ?? []).includes(t))
+  const keepSource = makeSourceFilter(opts.source)
+  const hasTags = makeTagFilter(opts.tags)
 
   const toHit = (doc: SearchDoc): SearchHit => ({
     id: doc.id,
@@ -195,7 +174,7 @@ async function doSearch(
 
   const push = (h: SearchHit): void => {
     if (h.hidden && !opts.includeHidden) return
-    if (!keep(h.sources)) return
+    if (!keepSource(h.sources)) return
     if (!hasTags(h.tags)) return
     if (!seenIds.has(h.id)) {
       seenIds.add(h.id)
@@ -204,17 +183,10 @@ async function doSearch(
   }
 
   // 空查询 = 浏览模式：列出全部 Star / 书签（应用来源与隐藏过滤 + 标签限定 + 排序）。
-  // 排序统一走 selectors 的 sortHitsByPref（审查 R2，替代此前 worker 内私有 sortItems）。
+  // 编排逻辑已抽到 core/search/query.ts（审查洞察 D1，本 worker 只剩 MiniSearch 调用与分发）。
   if (!needle) {
-    const items = sortHitsByPref(
-      (await getItemsCached())
-        .filter((i) => !i.hidden || opts.includeHidden)
-        .filter((i) => keep(i.sources))
-        .filter((i) => hasTags(i.tags))
-        .map(itemToHit),
-      opts.sort ?? 'recent',
-    )
-    return { items: items.slice(0, max), total: items.length }
+    const r = browseItems(await getItemsCached(), { ...opts, max })
+    return { items: r.hits, total: r.total }
   }
 
   // 1) MiniSearch 模糊/前缀命中
@@ -229,45 +201,30 @@ async function doSearch(
   // 2) 字面兜底：对当前全部条目做 title·url 包含匹配（保证 Star/书签都能命中）；
   //    走版本化缓存（审查 P2-2），不再每次按键全表读 IndexedDB
   if (out.length < max) {
-    const items = await getItemsCached()
-    for (const item of items) {
-      if (out.length >= max) break
-      if (seenIds.has(item.id)) continue
-      if (!hasTags(item.tags)) continue
-      if (item.title.toLowerCase().includes(needle) || item.url.toLowerCase().includes(needle)) {
-        push(itemToHit(item))
-      }
-    }
+    literalFallback(await getItemsCached(), needle, { ...opts, max }, seenIds, out)
   }
 
   // MiniSearch 的 storeFields 不含 description/notes（省内存），命中结果按 id 补取。
   // 条目缓存命中时直接从内存取（省一次 IndexedDB 批量读）；仅缓存不可用时回退 bulkGet
   if (needle && out.length > 0) {
     if (itemsCache && itemsCacheVersion === cachedVersion) {
-      const byId = new Map(itemsCache.map((x) => [x.id, x]))
-      for (const h of out) {
-        const row = byId.get(h.id)
-        if (!row) continue
-        if (row.description) h.description = row.description
-        if (row.notes) h.notes = row.notes
-      }
+      enrichHits(out, new Map(itemsCache.map((x) => [x.id, x])))
     } else {
       const full = await db.items.bulkGet(out.map((h) => h.id))
-      for (let i = 0; i < out.length; i++) {
-        const row = full[i]
-        if (!row) continue
-        if (row.description) out[i]!.description = row.description
-        if (row.notes) out[i]!.notes = row.notes
-      }
+      enrichHits(
+        out,
+        new Map((full.filter((x): x is StarItem => Boolean(x))).map((x) => [x.id, x])),
+      )
     }
   }
 
   return { items: out, total: out.length }
 }
 
-/** 由全部书签条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）；与兜底扫描共享全量缓存（审查 R6）。 */
-async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
-  const items = (await getItemsCached()).filter((i) => !i.hidden && (!tags || tags.every((t) => (i.tags ?? []).includes(t))))
+/** 由全部书签条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）；纯逻辑在 core/search/query.ts（审查洞察 D1）。 */
+function buildFolderNodeTree(items: StarItem[], tags?: string[]): FolderNode[] {
+  const keepTags = makeTagFilter(tags)
+  const visible = items.filter((i) => !i.hidden && keepTags(i.tags))
   const root: FolderNode = { id: '__root__', name: '', path: '', count: 0, folders: [], items: [] }
   const nodeByPath = new Map<string, FolderNode>()
   nodeByPath.set('', root)
@@ -301,6 +258,11 @@ async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
     nodes.push({ id: '$stars', name: 'all-stars', path: '$stars', count: starItems.length, folders: [], items: starItems, kind: 'stars' })
   }
   return nodes.concat(root.folders)
+}
+
+/** 异步包装：从条目缓存取数后委托纯函数构建收藏夹树。 */
+async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
+  return buildFolderNodeTree(await getItemsCached(), tags)
 }
 
 function readyResponse(rebuilding: boolean): WorkerResponse {

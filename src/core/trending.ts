@@ -76,18 +76,21 @@ export function parseTrendingHtml(html: string): TrendingRepo[] {
 
 const PERIOD_DAYS: Record<TrendingPeriod, number> = { daily: 2, weekly: 7, monthly: 30 }
 
-/** 抓取热榜；页面抓取失败自动回退 Search API。 */
-export async function fetchTrending(period: TrendingPeriod = 'weekly', language?: string): Promise<TrendingRepo[]> {
+/** 抓取热榜；页面抓取失败自动回退 Search API。返回数据来源供 UI 标注（解析坏了用户可感知）。 */
+export async function fetchTrending(
+  period: TrendingPeriod = 'weekly',
+  language?: string,
+): Promise<{ list: TrendingRepo[]; via: 'trending-html' | 'search-api' }> {
   try {
     const langPath = language ? '/' + encodeURIComponent(language.toLowerCase()) : ''
     const url = 'https://github.com/trending' + langPath + '?since=' + period
     const res = await fetch(url, { headers: { Accept: 'text/html' } })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const parsed = parseTrendingHtml(await res.text())
-    if (parsed.length > 0) return parsed
+    if (parsed.length > 0) return { list: parsed, via: 'trending-html' }
     throw new Error('trending 页解析为空')
   } catch {
-    return searchFallback(period, language)
+    return { list: await searchFallback(period, language), via: 'search-api' }
   }
 }
 
@@ -152,6 +155,8 @@ export interface TrendingResult {
   fetchedAt?: number
   /** 回退到过期缓存（本次抓取失败） */
   stale: boolean
+  /** 数据来源：trending 页解析（默认）或 Search API 兜底（解析失败时），UI 据此标注 */
+  via?: 'trending-html' | 'search-api'
 }
 
 export async function fetchTrendingCached(
@@ -165,9 +170,9 @@ export async function fetchTrendingCached(
     return { list: cached.data, fromCache: true, fetchedAt: cached.fetchedAt, stale: false }
   }
   try {
-    const list = await fetchTrending(period, language)
+    const { list, via } = await fetchTrending(period, language)
     await writeTrendingCache(period, language, list)
-    return { list, fromCache: false, fetchedAt: now, stale: false }
+    return { list, fromCache: false, fetchedAt: now, stale: false, via }
   } catch (e) {
     // 抓取失败：有任何旧缓存就先展示（标注过期），完全没缓存才抛错
     if (cached) return { list: cached.data, fromCache: true, fetchedAt: cached.fetchedAt, stale: true }

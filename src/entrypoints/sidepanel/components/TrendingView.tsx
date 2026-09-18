@@ -20,7 +20,7 @@ export function TrendingView({
   error: string
   period: TrendingPeriod
   starred: Set<string>
-  meta: { fromCache: boolean; fetchedAt?: number; stale: boolean }
+  meta: { fromCache: boolean; fetchedAt?: number; stale: boolean; via?: 'trending-html' | 'search-api' }
   onPeriod: (p: TrendingPeriod) => void
   onStar: (r: TrendingRepo) => void
   onBookmark: (r: TrendingRepo) => void
@@ -45,6 +45,7 @@ export function TrendingView({
           ↻ {t('trending.refresh')}
         </button>
       </div>
+      {meta.via === 'search-api' && <div className={'trending-cache stale'}>{t('trending.searchApiFallback')}</div>}
       {meta.fetchedAt != null && (
         <div className={'trending-cache' + (meta.stale ? ' stale' : '')}>
           {meta.fromCache
