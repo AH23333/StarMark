@@ -3,7 +3,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { walkAllBookmarks, registerBookmarkListeners } from './bookmarks'
 import { allItems, db, getAppMeta, getSyncState } from '../db'
 import { normalizeUrl } from '../normalize'
-import type { BookmarkSyncState } from '../types'
+import type { BookmarkSyncState, StarItem } from '../types'
 
 /*
  * 书签同步测试（审查 P1-7 / P2-1 回归）：
@@ -169,10 +169,13 @@ describe('书签同步（审查 P1-7 / P2-1 回归）', () => {
 
     const onChanged = changedHandlers[0]![0] as (id: string) => void
     onChanged('b1')
-    // 1s 节流 flush + IndexedDB 写入
-    await new Promise((r) => setTimeout(r, 1400))
-
-    const row = (await allItems()).find((i) => i.url === normalizeUrl('https://github.com/lucaong/minisearch'))
+    // 轮询等待节流 flush（1s）+ IndexedDB 写入完成，避免固定 sleep 在高负载下抖动
+    let row: StarItem | undefined
+    for (let i = 0; i < 250; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      row = (await allItems()).find((x) => x.url === normalizeUrl('https://github.com/lucaong/minisearch'))
+      if (row?.bookmarkMeta?.folderPaths.join('|') === '书签栏|设计') break
+    }
     expect(row?.bookmarkMeta?.folderPaths).toEqual(['书签栏', '设计'])
     expect(row?.bookmarkMeta?.folderPaths[0]).not.toBe('')
   }, 15_000)
@@ -186,8 +189,13 @@ describe('书签同步（审查 P1-7 / P2-1 回归）', () => {
     byId.get('f1')!.title = '研发'
     const onChanged = changedHandlers[0]![0] as (id: string) => void
     onChanged('f1')
-    // flush(1s) + 全量重走
-    await new Promise((r) => setTimeout(r, 2000))
+    // flush(1s) + 全量重走：轮询等待路径被纠正
+    for (let i = 0; i < 250; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      const rows = await allItems()
+      const row = rows.find((x) => x.url === normalizeUrl('https://github.com/lucaong/minisearch'))
+      if (row?.bookmarkMeta?.folderPaths.join('|') === '书签栏|研发') break
+    }
 
     const row = (await allItems()).find((i) => i.url === normalizeUrl('https://github.com/lucaong/minisearch'))
     expect(row?.bookmarkMeta?.folderPaths).toEqual(['书签栏', '研发'])
