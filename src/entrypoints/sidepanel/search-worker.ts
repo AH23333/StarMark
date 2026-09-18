@@ -239,14 +239,25 @@ async function doSearch(
     }
   }
 
-  // MiniSearch 的 storeFields 不含 description/notes（省内存），命中结果按 id 补取
+  // MiniSearch 的 storeFields 不含 description/notes（省内存），命中结果按 id 补取。
+  // 条目缓存命中时直接从内存取（省一次 IndexedDB 批量读）；仅缓存不可用时回退 bulkGet
   if (needle && out.length > 0) {
-    const full = await db.items.bulkGet(out.map((h) => h.id))
-    for (let i = 0; i < out.length; i++) {
-      const row = full[i]
-      if (!row) continue
-      if (row.description) out[i]!.description = row.description
-      if (row.notes) out[i]!.notes = row.notes
+    if (itemsCache && itemsCacheVersion === cachedVersion) {
+      const byId = new Map(itemsCache.map((x) => [x.id, x]))
+      for (const h of out) {
+        const row = byId.get(h.id)
+        if (!row) continue
+        if (row.description) h.description = row.description
+        if (row.notes) h.notes = row.notes
+      }
+    } else {
+      const full = await db.items.bulkGet(out.map((h) => h.id))
+      for (let i = 0; i < out.length; i++) {
+        const row = full[i]
+        if (!row) continue
+        if (row.description) out[i]!.description = row.description
+        if (row.notes) out[i]!.notes = row.notes
+      }
     }
   }
 

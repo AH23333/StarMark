@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { useT } from '~/core/i18n'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useT, getLang } from '~/core/i18n'
 import { allItems } from '~/core/db'
 import { buildHealthReport, type HealthReport } from '~/core/insights'
 import { sendToBackground } from '~/core/msg'
@@ -26,12 +26,24 @@ export default function App() {
 
   const notify = useCallback((kind: 'ok' | 'err', text: string) => setMsg({ kind, text }), [])
 
+  // 健康报告按 indexVersion + 语言缓存：数据未变且语言未切时不重建 O(n) 报告
+  const healthCacheRef = useRef<{ key: string; report: HealthReport } | null>(null)
+
   // 全局数据刷新：BgState（经后台）+ 健康报告（页面直读 Dexie，低频报表路径）
   const refresh = useCallback(() => {
-    void sendToBackground({ type: 'get-state' }).then((res) => {
-      if (res.state) setState(res.state)
-    })
-    void allItems().then((items) => setHealth(buildHealthReport(items, 14, t)))
+    void (async () => {
+      const st = await sendToBackground({ type: 'get-state' })
+      if (st.state) setState(st.state)
+      const version = st.state?.indexVersion
+      const key = `${version ?? '?'}:${getLang()}`
+      if (healthCacheRef.current?.key === key) {
+        setHealth(healthCacheRef.current.report)
+        return
+      }
+      const report = buildHealthReport(await allItems(), 14, t)
+      healthCacheRef.current = { key, report }
+      setHealth(report)
+    })()
     // t 变化（语言切换）时健康报告文案需重建
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t])
