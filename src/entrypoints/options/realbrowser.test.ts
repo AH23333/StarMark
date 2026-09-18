@@ -47,8 +47,18 @@ describe('真机冒烟', () => {
       for (const e of errors) console.log(e)
       if (errors.length === 0) console.log('(no page errors)')
     } finally {
-      await browser.close()
-      fs.rmSync(profile, { recursive: true, force: true })
+      // Edge headless 下 browser.close() 偶发挂起（页面已渲染完成、断言已结束），
+      // 限时 5s 强制继续，避免整个测试被拖到 60s 超时
+      await Promise.race([
+        browser.close().catch(() => undefined),
+        new Promise((r) => setTimeout(r, 5000)),
+      ])
+      // 进程可能尚未完全释放 profile 目录（EPERM）：重试后仍失败则留给系统临时目录清理
+      try {
+        fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 })
+      } catch {
+        /* ignore */
+      }
     }
   }, 60000)
 })
