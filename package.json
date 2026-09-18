@@ -2,7 +2,7 @@
   "name": "starmark",
   "description": "StarMark - 统一搜索 GitHub Stars 与浏览器书签的本地搜索入口",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
