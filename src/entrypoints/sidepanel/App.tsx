@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import SearchWorker from './search-worker?worker'
+import { UI_POLL_MS, INVALIDATE_DEBOUNCE_MS, ZOMBIE_AFTER_MS } from '~/core/constants'
 import { sendToBackground } from '~/core/msg'
 import { initTheme } from '~/core/theme'
 import { useT } from '~/core/i18n'
@@ -170,7 +171,7 @@ export default function App() {
           const tf = tagFiltersRef.current
           worker.postMessage({ type: 'tree', tags: tf.length ? [...tf] : undefined })
           worker.postMessage({ type: 'tags' })
-        }, 500)
+        }, INVALIDATE_DEBOUNCE_MS)
       }
     }
     browser.storage.onChanged.addListener(onStorage)

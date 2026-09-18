@@ -1,4 +1,5 @@
 ﻿import { browser } from 'wxt/browser'
+import { KEEPALIVE_MS } from '../constants'
 
 /**
  * LLM Provider 抽象（开发技术文档 §17）：用户自带 Key（BYOK），默认关闭。
@@ -78,7 +79,7 @@ export async function keepAliveDuring<T>(p: Promise<T>): Promise<T> {
   let wake: () => void = () => undefined
   const sleeper = (): Promise<void> =>
     new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, 20_000)
+      const t = setTimeout(resolve, KEEPALIVE_MS)
       wake = () => {
         clearTimeout(t)
         resolve()

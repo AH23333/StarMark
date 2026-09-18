@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser'
 import { faviconFor, hashId, normalizeUrl } from '../normalize'
 import { getByUrls, getSyncState, setSyncState, stripSourceForUrls, upsertItems } from '../db'
+import { DB_BULK_CHUNK } from '../constants'
 import { bumpIndexVersion } from '../version'
 import { logActivity } from '../activity'
 import { applyRulesForUrls } from '../rules'
@@ -73,7 +74,7 @@ async function upsertBookmarksBatch(entries: { node: BookmarkTreeNode; paths: st
   }
   const incoming = [...byUrl.values()].map((e) => bookmarkToItem(e.node, e.paths, e.ids))
 
-  const CHUNK = 500
+  const CHUNK = DB_BULK_CHUNK
   const merged: StarItem[] = []
   for (let i = 0; i < incoming.length; i += CHUNK) {
     const slice = incoming.slice(i, i + CHUNK)

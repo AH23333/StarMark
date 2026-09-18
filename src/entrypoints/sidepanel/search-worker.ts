@@ -1,4 +1,5 @@
 import MiniSearch from 'minisearch'
+import { DB_BULK_CHUNK, SNAPSHOT_DEBOUNCE_MS } from '~/core/constants'
 import { getSearchIndex, allItems, hiddenItems, getAppMeta, saveSearchIndex, db } from '~/core/db'
 import { createMiniSearch, docFromItem, searchOptions } from '~/core/search/indexer'
 import { recentActivity } from '~/core/activity'
@@ -43,7 +44,7 @@ function schedulePersist(): void {
   persistTimer = setTimeout(() => {
     persistTimer = null
     void persistSnapshot()
-  }, 4000)
+  }, SNAPSHOT_DEBOUNCE_MS)
 }
 async function persistSnapshot(): Promise<void> {
   if (!index || !ready) return
@@ -114,7 +115,7 @@ async function ensureIndex(force = false, version = 0): Promise<void> {
   const items = await allItems()
   const ms = createMiniSearch()
   const docs = items.map(docFromItem)
-  const CHUNK = 500
+  const CHUNK = DB_BULK_CHUNK
   for (let i = 0; i < docs.length; i += CHUNK) {
     ms.addAll(docs.slice(i, i + CHUNK))
   }

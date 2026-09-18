@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable, type Transaction } from 'dexie'
 import { browser } from 'wxt/browser'
+import { DB_BULK_CHUNK } from './constants'
 import { hashId, normalizeUrl } from './normalize'
 import { USER_FIELDS } from './types'
 import type { ActivityEntry, ItemEditPatch, SearchIndexRecord, Source, StarItem, SyncStateRow, TagSuggestion } from './types'
@@ -280,7 +281,7 @@ function mergePreserving(old: StarItem | undefined, incoming: StarItem): StarIte
 }
 
 export async function upsertItems(items: StarItem[]): Promise<void> {
-  const CHUNK = 500
+  const CHUNK = DB_BULK_CHUNK
   await db.transaction('rw', db.items, db.meta, async () => {
     const meta = await getAppMeta()
     for (let i = 0; i < items.length; i += CHUNK) {
@@ -305,7 +306,7 @@ export async function upsertItems(items: StarItem[]): Promise<void> {
  * 返回写入的条目数。
  */
 export async function restoreAllItems(items: StarItem[]): Promise<number> {
-  const CHUNK = 500
+  const CHUNK = DB_BULK_CHUNK
   let written = 0
   await db.transaction('rw', db.items, db.meta, db.suggestions, db.activity, async () => {
     await db.items.clear()

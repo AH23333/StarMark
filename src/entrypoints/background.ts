@@ -11,6 +11,7 @@ import { bumpIndexVersion, getIndexVersion } from '~/core/version'
 import { GH_SYNC_STATE_KEY } from '~/core/sync/github'
 import { getToken, validateToken } from '~/core/api/github'
 import { formatOmniboxEntry, suggestEntries } from '~/core/omnibox'
+import { BM_WALK_THROTTLE_MS, DEFAULT_SYNC_HOURS } from '~/core/constants'
 import type { BookmarkSyncState, GitHubSyncState, SuggestEntry } from '~/core/types'
 import type { BgRequest, BgResponse, BgState } from '~/core/msg'
 
@@ -41,7 +42,7 @@ export default defineBackground(() => {
 
   async function setupAlarm(): Promise<void> {
     const s = await browser.storage.local.get('syncIntervalHours')
-    const hours = (s.syncIntervalHours as number | undefined) ?? 6
+    const hours = (s.syncIntervalHours as number | undefined) ?? DEFAULT_SYNC_HOURS
     await browser.alarms.create(ALARM_NAME, { periodInMinutes: Math.max(30, hours * 60) })
   }
 
@@ -96,7 +97,7 @@ export default defineBackground(() => {
   /** 书签全量索引：无需 Token，节流（10 分钟内不重复全量遍历）。 */
   async function ensureBookmarkWalk(): Promise<void> {
     const state = await getSyncState<BookmarkSyncState>(BM_SYNC_STATE_KEY)
-    if (state?.lastFullWalkAt && Date.now() - state.lastFullWalkAt < 10 * 60 * 1000) return
+    if (state?.lastFullWalkAt && Date.now() - state.lastFullWalkAt < BM_WALK_THROTTLE_MS) return
     try {
       await walkAllBookmarks()
     } catch (e) {

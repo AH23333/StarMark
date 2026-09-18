@@ -1,4 +1,5 @@
 import { db, updateItem, getAppMeta } from '../db'
+import { AI_SUGGEST_PAGE_SIZE } from '../constants'
 import { bumpIndexVersion } from '../version'
 import { getSyncState, setSyncState } from '../db'
 import { buildTagPrompt, getAiSettings, isAiConfigured, suggestTagsViaAi } from './provider'
@@ -32,7 +33,7 @@ async function setPipeline(state: AiPipelineState): Promise<void> {
   await setSyncState(PIPELINE_KEY, state)
 }
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = AI_SUGGEST_PAGE_SIZE
 
 /** 运行标志：运行中重复触发立即返回当前状态，不并发跑两个循环（SW 会话内存态） */
 let pipelineActive = false

@@ -1,10 +1,6 @@
 import { db } from './db'
+import { ACTIVITY_MAX_AGE_MS, ACTIVITY_TRIM_INTERVAL_MS } from './constants'
 import type { ActivityEntry, ActivityKind } from './types'
-
-/** 动态保留窗口：30 天（时间线本就只展示最近几十条，窗口足够） */
-const ACTIVITY_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
-/** 修剪节流：60s 内不重复执行范围删除（每次写入都探测一次索引下界纯属浪费） */
-const TRIM_INTERVAL_MS = 60_000
 
 let lastTrimAt = 0
 
@@ -18,7 +14,7 @@ let lastTrimAt = 0
 export async function logActivity(kind: ActivityKind, title: string, url: string): Promise<void> {
   await db.activity.add({ at: Date.now(), kind, title, url })
   const now = Date.now()
-  if (now - lastTrimAt < TRIM_INTERVAL_MS) return
+  if (now - lastTrimAt < ACTIVITY_TRIM_INTERVAL_MS) return
   lastTrimAt = now
   await db.activity.where('at').below(now - ACTIVITY_MAX_AGE_MS).delete()
 }

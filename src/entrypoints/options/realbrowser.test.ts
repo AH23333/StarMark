@@ -4,6 +4,7 @@ import puppeteer from 'puppeteer-core'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { BROWSER_CLOSE_GUARD_MS } from '../../core/constants'
 
 describe('真机冒烟', () => {
   it('输出 pageerror 详情', async () => {
@@ -51,7 +52,7 @@ describe('真机冒烟', () => {
       // 限时 5s 强制继续，避免整个测试被拖到 60s 超时
       await Promise.race([
         browser.close().catch(() => undefined),
-        new Promise((r) => setTimeout(r, 5000)),
+        new Promise((r) => setTimeout(r, BROWSER_CLOSE_GUARD_MS)),
       ])
       // 进程可能尚未完全释放 profile 目录（EPERM）：重试后仍失败则留给系统临时目录清理
       try {
