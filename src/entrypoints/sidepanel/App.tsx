@@ -440,7 +440,13 @@ export default function App() {
     [],
   )
 
-  /** 标签点击统一入口：按标签筛选（切到浏览视图），而非文本搜索——标签词不在标题/URL 时文本搜索会空手而归。 */
+  /**
+   * 标签点击统一入口（「标签区域」的设计语义，见产品设想）：
+   * ① 标签页/卡片上选标签 → 返回收藏夹（浏览）视图查看**按该标签过滤**的结果；
+   * ② 过滤后仍可在上方搜索框继续输入关键词——在过滤结果内二次搜索
+   *    （worker 的 search 同传 needle + tags，两条件叠加，见 doSearch 的 filters 链）。
+   * 因此这里**不走文本搜索**：标签词不在标题/URL 时文本搜索会空手而归。
+   */
   const filterByTag = useCallback((tag: string) => {
     setQuery('')
     setTagFilters([tag])
