@@ -60,12 +60,10 @@ StarMark 是一款面向 Chrome/Edge（Manifest V3）的浏览器扩展。它将
 | **05 · 标签云**：频次统计，点击即筛 | **06 · 动态时间线**：Star / 书签增删轨迹 |
 | ![批量操作](docs/screenshots/07-batch-mode.png) | ![热榜推荐](docs/screenshots/08-trending.png) |
 | **07 · 批量多选 + 导出**：加标签 / 隐藏 / 删除 | **08 · 热榜推荐**：日 / 周 / 月，一键 Star |
-| ![深色主题](docs/screenshots/09-dark-mode.png) | ![设置页](docs/screenshots/10-settings.png) |
-| **09 · 深色主题**：全界面深浅色随主题 | **10 · 设置页 · 账号与同步**：锚点导航 + Token 管理 |
-| ![AI 整理配置与运行](docs/screenshots/11-ai-organize.png) | ![AI 分组应用](docs/screenshots/12-ai-groups.png) |
-| **11 · AI 整理面板**：Provider 配置、运行进度、暂停/继续 | **12 · 分组预览与应用**：按标签组预览，单组或全部应用 |
-| ![规则自动标签](docs/screenshots/13-rules.png) | ![数据与外观](docs/screenshots/14-settings-data-theme.png) |
-| **13 · 规则自动标签**：域名 / URL / 标题 / 语言规则 | **14 · 数据与外观**：备份导出 / 主题语言 / 诊断 |
+| ![浅色主题](docs/screenshots/09-light-mode.png) | ![设置页](docs/screenshots/10-settings.png) |
+| **09 · 浅色主题**：全界面深浅色随主题切换 | **10 · 设置页 · 账号与同步**：锚点导航 + Token 管理 |
+| ![AI 整理与规则](docs/screenshots/11-ai-rules.png) | ![数据与外观](docs/screenshots/12-settings-data-theme.png) |
+| **11 · AI 整理与规则**：Provider 配置、运行进度、分组预览应用与规则自动标签 | **12 · 数据与外观**：备份导出 / 主题语言 / 诊断 |
 
 ## 🚀 快速开始
 
