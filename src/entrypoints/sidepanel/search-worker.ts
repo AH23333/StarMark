@@ -225,6 +225,8 @@ async function doSearch(
 function buildFolderNodeTree(items: StarItem[], tags?: string[]): FolderNode[] {
   const keepTags = makeTagFilter(tags)
   const visible = items.filter((i) => !i.hidden && keepTags(i.tags))
+  // 临时诊断（截图排查）：树过滤的输入/输出计数，定位后移除
+  console.log('[starmark:diag] tree filter: total=', items.length, 'tags=', JSON.stringify(tags), 'matched=', visible.length, 'withTags=', items.filter((i) => (i.tags ?? []).length > 0).length)
   const root: FolderNode = { id: '__root__', name: '', path: '', count: 0, folders: [], items: [] }
   const nodeByPath = new Map<string, FolderNode>()
   nodeByPath.set('', root)
@@ -314,14 +316,25 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
     return
   }
   if (req.type === 'tags') {
-    void getAppMeta()
-      .then((m) => {
-        const tags = Object.keys(m.tags)
-          .map((name) => ({ name, count: m.tags[name]! }))
-          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
-        self.postMessage({ type: 'tags-result', tags } satisfies WorkerResponse)
-      })
-      .catch(() => self.postMessage({ type: 'tags-result', tags: [] } satisfies WorkerResponse))
+    // 标签频次从条目实时统计（不再读 meta 直方图）：彻底消除 meta 与条目 tags 脱同步——
+    // 旧实现里 meta.tags 与条目实际标签不一致时，标签云可点但过滤永远为空（用户实测踩坑）。
+    // 走条目缓存（版本化），成本可忽略。
+    void (async () => {
+      const items = await getItemsCached()
+      const freq = new Map<string, number>()
+      for (const it of items) {
+        for (const t of it.tags ?? []) {
+          if (!t) continue
+          freq.set(t, (freq.get(t) ?? 0) + 1)
+        }
+      }
+      const tags = [...freq.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
+      console.log('[starmark:diag] tags from items:', tags.length, 'items:', items.length,
+        'sample:', tags.slice(0, 5).map((t) => `${t.name}(${t.count})`).join(', '))
+      self.postMessage({ type: 'tags-result', tags } satisfies WorkerResponse)
+    })().catch(() => self.postMessage({ type: 'tags-result', tags: [] } satisfies WorkerResponse))
     return
   }
   if (req.type === 'hidden') {
