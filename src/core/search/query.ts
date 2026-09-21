@@ -1,6 +1,6 @@
 import { sortHitsByPref } from './selectors'
 import { makeHiddenFilter, makeSourceFilter, makeTagFilter, type SearchFilterParams } from './filters'
-import type { SearchHit } from './protocol'
+import type { SearchHit, FolderNode } from './protocol'
 import type { StarItem, UIPrefs } from '../types'
 
 /**
@@ -94,4 +94,46 @@ export function enrichHits(hits: SearchHit[], fullById: Map<string, StarItem>): 
 /** 简单包含匹配（兜底判定的共享定义） */
 export function matchesLiteral(item: Pick<StarItem, 'title' | 'url'>, needle: string): boolean {
   return item.title.toLowerCase().includes(needle) || item.url.toLowerCase().includes(needle)
+}
+
+/**
+ * 由全部条目的 folderPaths 构建收藏夹树（未搜索时的默认视图，审查洞察 D1）。
+ * 与浏览模式同一标签语义（AND 限定）：先按隐藏 + 标签过滤，再建树——
+ * 修复前遍历未过滤的全量 items，导致标签过滤在「文件夹」视图不生效（0.2.0 为过滤后建树）。
+ */
+export function buildFolderNodeTree(items: StarItem[], tags?: string[]): FolderNode[] {
+  const keepTags = makeTagFilter(tags)
+  const visible = items.filter((i) => !i.hidden && keepTags(i.tags))
+  const root: FolderNode = { id: '__root__', name: '', path: '', count: 0, folders: [], items: [] }
+  const nodeByPath = new Map<string, FolderNode>()
+  nodeByPath.set('', root)
+
+  const starItems: FolderNode['items'] = []
+  for (const item of visible) {
+    if (item.sources.includes('star')) {
+      starItems.push(itemToHit(item))
+    }
+    if (!item.sources.includes('bookmark')) continue
+    const paths = item.bookmarkMeta?.folderPaths ?? []
+    let cur = root
+    let joined = ''
+    for (const [i, folderName] of paths.entries()) {
+      joined = joined ? `${joined} / ${folderName}` : folderName
+      let node = nodeByPath.get(joined)
+      if (!node) {
+        node = { id: item.bookmarkMeta?.folderIds?.[i] ?? `p:${joined}`, name: folderName, path: joined, count: 0, folders: [], items: [] }
+        nodeByPath.set(joined, node)
+        cur.folders.push(node)
+      }
+      cur = node
+      cur.count++
+    }
+    cur.items.push(itemToHit(item))
+  }
+
+  const nodes: FolderNode[] = []
+  if (starItems.length > 0) {
+    nodes.push({ id: '$stars', name: 'all-stars', path: '$stars', count: starItems.length, folders: [], items: starItems, kind: 'stars' })
+  }
+  return nodes.concat(root.folders)
 }

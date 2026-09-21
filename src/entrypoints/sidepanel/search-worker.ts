@@ -6,7 +6,7 @@ import { recentActivity } from '~/core/activity'
 import { compressText, decompressToText, hasDeflate } from '~/core/compress'
 import { sortHitsByPref } from '~/core/search/selectors'
 import { makeSourceFilter, makeTagFilter } from '~/core/search/filters'
-import { browseItems, literalFallback, enrichHits, itemToHit } from '~/core/search/query'
+import { browseItems, literalFallback, enrichHits, buildFolderNodeTree } from '~/core/search/query'
 import type { SearchDoc, StarItem, UIPrefs } from '~/core/types'
 import type { FolderNode, WorkerRequest, WorkerResponse, SearchHit } from '~/core/search/protocol'
 
@@ -221,48 +221,7 @@ async function doSearch(
   return { items: out, total: out.length }
 }
 
-/** 由全部书签条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）；纯逻辑在 core/search/query.ts（审查洞察 D1）。 */
-function buildFolderNodeTree(items: StarItem[], tags?: string[]): FolderNode[] {
-  const keepTags = makeTagFilter(tags)
-  const visible = items.filter((i) => !i.hidden && keepTags(i.tags))
-  // 临时诊断（截图排查）：树过滤的输入/输出计数，定位后移除
-  console.log('[starmark:diag] tree filter: total=', items.length, 'tags=', JSON.stringify(tags), 'matched=', visible.length, 'withTags=', items.filter((i) => (i.tags ?? []).length > 0).length)
-  const root: FolderNode = { id: '__root__', name: '', path: '', count: 0, folders: [], items: [] }
-  const nodeByPath = new Map<string, FolderNode>()
-  nodeByPath.set('', root)
-
-  const starItems: FolderNode['items'] = []
-  for (const item of items) {
-    if (item.hidden) continue
-    if (item.sources.includes('star')) {
-      starItems.push(itemToHit(item))
-    }
-    if (!item.sources.includes('bookmark')) continue
-    const paths = item.bookmarkMeta?.folderPaths ?? []
-    let cur = root
-    let joined = ''
-    for (const [i, folderName] of paths.entries()) {
-      joined = joined ? `${joined} / ${folderName}` : folderName
-      let node = nodeByPath.get(joined)
-      if (!node) {
-        node = { id: item.bookmarkMeta?.folderIds?.[i] ?? `p:${joined}`, name: folderName, path: joined, count: 0, folders: [], items: [] }
-        nodeByPath.set(joined, node)
-        cur.folders.push(node)
-      }
-      cur = node
-      cur.count++
-    }
-    cur.items.push(itemToHit(item))
-  }
-
-  const nodes: FolderNode[] = []
-  if (starItems.length > 0) {
-    nodes.push({ id: '$stars', name: 'all-stars', path: '$stars', count: starItems.length, folders: [], items: starItems, kind: 'stars' })
-  }
-  return nodes.concat(root.folders)
-}
-
-/** 异步包装：从条目缓存取数后委托纯函数构建收藏夹树。 */
+/** 由全部条目的 folderPaths 构建收藏夹树（未搜索时的默认视图）；纯逻辑在 core/search/query.ts（审查洞察 D1）。 */
 async function buildFolderTree(tags?: string[]): Promise<FolderNode[]> {
   return buildFolderNodeTree(await getItemsCached(), tags)
 }
@@ -331,8 +290,6 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
       const tags = [...freq.entries()]
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
-      console.log('[starmark:diag] tags from items:', tags.length, 'items:', items.length,
-        'sample:', tags.slice(0, 5).map((t) => `${t.name}(${t.count})`).join(', '))
       self.postMessage({ type: 'tags-result', tags } satisfies WorkerResponse)
     })().catch(() => self.postMessage({ type: 'tags-result', tags: [] } satisfies WorkerResponse))
     return

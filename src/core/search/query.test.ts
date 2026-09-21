@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { browseItems, literalFallback, enrichHits, itemToHit } from './query'
+import { browseItems, literalFallback, enrichHits, itemToHit, buildFolderNodeTree } from './query'
 import type { SearchHit } from './protocol'
 import type { StarItem } from '../types'
 
@@ -110,5 +110,31 @@ describe('enrichHits / itemToHit', () => {
     const hit = itemToHit(items[0]!)
     enrichHits([hit], new Map())
     expect(hit.description).toBe('')
+  })
+})
+
+describe('buildFolderNodeTree（收藏夹树构建，标签限定与浏览模式同语义）', () => {
+  it('无标签：Star 与书签全部非隐藏条目入树（隐藏条目排除）', () => {
+    const tree = buildFolderNodeTree(items)
+    const stars = tree.find((n) => n.kind === 'stars')
+    expect(stars?.items.map((h) => h.id).sort()).toEqual(['a', 'd'])
+    const bm = tree.find((n) => n.name === '书签栏')
+    expect(bm?.count).toBe(1)
+    expect(bm?.items.map((h) => h.id)).toEqual(['b'])
+    const all = tree.flatMap((n) => n.items.map((h) => h.id))
+    expect(all).not.toContain('c') // 隐藏条目不出现在树中
+  })
+
+  it('标签 AND 限定：树只保留匹配条目（Star 与书签文件夹同受约束）', () => {
+    const tree = buildFolderNodeTree(items, ['dev'])
+    const stars = tree.find((n) => n.kind === 'stars')
+    expect(stars?.items.map((h) => h.id).sort()).toEqual(['a', 'd'])
+    expect(tree.find((n) => n.name === '书签栏')).toBeUndefined() // 'b' 仅带 read，被过滤
+  })
+
+  it('多标签叠加过滤 + 全部标签移除后回落全量', () => {
+    const tree = buildFolderNodeTree(items, ['dev', 'read'])
+    expect(tree.find((n) => n.kind === 'stars')?.items.map((h) => h.id)).toEqual(['d'])
+    expect(buildFolderNodeTree(items, []).flatMap((n) => n.items.map((h) => h.id)).sort()).toEqual(['a', 'b', 'd'])
   })
 })
