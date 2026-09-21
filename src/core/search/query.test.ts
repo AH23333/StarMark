@@ -70,6 +70,33 @@ describe('literalFallback（字面兜底）', () => {
   })
 })
 
+describe('needle + tags 叠加（"过滤结果内二次搜索"设计语义）', () => {
+  // 用户设计：标签区选标签 → 浏览视图看过滤结果 → 搜索框继续输入 → 在过滤结果内二次搜索。
+  // worker 的 doSearch 同传 needle + tags，两者叠加（query.ts 的谓词链）——本组测试锚定该语义。
+  it('浏览模式叠加：tags 过滤 + 文本搜索栏独立输入时仍按标签过滤（空查询）', () => {
+    const r = browseItems(items, { max: 10, tags: ['dev'] })
+    expect(r.hits.map((h) => h.id)).toEqual(['a', 'd'])
+  })
+
+  it('搜索叠加：needle 命中且满足标签过滤的条目才返回', () => {
+    const out: SearchHit[] = []
+    const seen = new Set<string>()
+    literalFallback(items, 'foo', { max: 10, tags: ['dev'] }, seen, out)
+    // 'a'：url 含 foo 且带 dev ✓；'d'：url 不含 foo ✗
+    expect(out.map((h) => h.id)).toEqual(['a'])
+
+    const out2: SearchHit[] = []
+    literalFallback(items, 'words', { max: 10, tags: ['dev'] }, seen, out2)
+    expect(out2.map((h) => h.id)).toEqual(['d'])
+  })
+
+  it('needle 命中但不满足标签过滤 → 不返回（叠加是 AND 语义）', () => {
+    const out: SearchHit[] = []
+    literalFallback(items, 'docs', { max: 10, tags: ['dev'] }, new Set(), out)
+    expect(out).toEqual([]) // 'b' 命中 docs 但只有 read 标签
+  })
+})
+
 describe('enrichHits / itemToHit', () => {
   it('从完整条目回填 description/notes', () => {
     const hit = itemToHit(items[0]!)
