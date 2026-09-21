@@ -440,6 +440,13 @@ export default function App() {
     [],
   )
 
+  /** 标签点击统一入口：按标签筛选（切到浏览视图），而非文本搜索——标签词不在标题/URL 时文本搜索会空手而归。 */
+  const filterByTag = useCallback((tag: string) => {
+    setQuery('')
+    setTagFilters([tag])
+    setTab('tree')
+  }, [])
+
   const openCtx = (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => {
     e.preventDefault()
     setCtxMenu({ x: e.clientX, y: e.clientY, hit })
@@ -668,7 +675,7 @@ export default function App() {
                         style={{ color: tagColor(tg.name) }}
                         onClick={() => {
                           setTagFilters((prev) => (on ? prev.filter((x) => x !== tg.name) : [...prev, tg.name]))
-                          if (!on && tab !== 'tags') setTab('tree')
+                          if (!on) setTab('tree')
                         }}
                         title={on ? t('tags.removeFilter', { tag: tg.name }) : t('tags.addFilter', { tag: tg.name })}
                       >
@@ -707,7 +714,7 @@ export default function App() {
                       query={query}
                       dupIds={dupIds}
                       onUpdate={updateItem}
-                      onTagClick={(t) => setQuery(t)}
+                      onTagClick={filterByTag}
                       onCtx={openCtx}
                       allTags={tagNames}
                       batchMode={batchMode}
@@ -768,7 +775,7 @@ export default function App() {
                     query={query}
                     isDup={dupIds.has(h.id)}
                     onUpdate={updateItem}
-                    onTagClick={(t) => setQuery(t)}
+                    onTagClick={filterByTag}
                     onContextMenu={(e) => openCtx(e, h)}
                     showAvatar={prefs.letterAvatar !== false}
                     allTags={tagNames}

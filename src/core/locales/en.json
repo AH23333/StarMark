@@ -308,5 +308,13 @@
   "opt.ai.clsStalled": "Task appears to have been interrupted by the browser (heartbeat timeout). Click \"Resume Organize\" to continue",
   "opt.ai.pendingCleanup": "Found {n} legacy suggestions awaiting review (from the old per-item feature)",
   "opt.ai.pendingClear": "Clear",
-  "trending.searchApiFallback": "Page parsing unavailable, fell back to GitHub Search API (data may differ slightly)"
+  "trending.searchApiFallback": "Page parsing unavailable, fell back to GitHub Search API (data may differ slightly)",
+  "nav.account": "Account & Sync",
+  "nav.stats": "Stats & Health",
+  "nav.ai": "AI Organize",
+  "nav.rules": "Tag Rules",
+  "nav.data": "Data & Export",
+  "nav.appearance": "Appearance & Language",
+  "nav.diag": "Diagnostics",
+  "nav.aria": "Settings section navigation"
 }

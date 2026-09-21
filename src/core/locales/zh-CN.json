@@ -308,5 +308,13 @@
   "opt.ai.clsStalled": "任务疑似被浏览器中断（心跳超时）。点击「继续整理」可从断点恢复",
   "opt.ai.pendingCleanup": "检测到历史待审核建议 {n} 条（旧版逐条建议功能）",
   "opt.ai.pendingClear": "清空",
-  "trending.searchApiFallback": "页面解析暂不可用，已回退到 GitHub Search API（数据可能略有差异）"
+  "trending.searchApiFallback": "页面解析暂不可用，已回退到 GitHub Search API（数据可能略有差异）",
+  "nav.account": "账号与同步",
+  "nav.stats": "统计与健康",
+  "nav.ai": "AI 整理",
+  "nav.rules": "标签规则",
+  "nav.data": "数据与导出",
+  "nav.appearance": "外观与语言",
+  "nav.diag": "诊断",
+  "nav.aria": "设置分区导航"
 }

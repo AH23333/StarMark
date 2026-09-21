@@ -27,6 +27,20 @@ export default function App() {
 
   const notify = useCallback((kind: 'ok' | 'err', text: string) => setMsg({ kind, text }), [])
 
+  /* 锚点导航：设置页过长，顶部按钮一键跳转到对应面板（洞察 F1：过长且序号混乱 → 导航 + 分区） */
+  const panels = [
+    { id: 'panel-account', key: 'nav.account' },
+    { id: 'panel-stats', key: 'nav.stats' },
+    { id: 'panel-ai', key: 'nav.ai' },
+    { id: 'panel-rules', key: 'nav.rules' },
+    { id: 'panel-data', key: 'nav.data' },
+    { id: 'panel-appearance', key: 'nav.appearance' },
+    { id: 'panel-diag', key: 'nav.diag' },
+  ] as const
+
+  const jumpTo = (id: string) =>
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
   // 健康报告按 indexVersion + 语言缓存：数据未变且语言未切时不重建 O(n) 报告
   const healthCacheRef = useRef<{ key: string; report: HealthReport } | null>(null)
 
@@ -57,13 +71,35 @@ export default function App() {
     <div className="page">
       <h1>{t('opt.title')}</h1>
 
-      <AppearancePanel notify={notify} />
-      <AccountPanel state={state} setState={setState} notify={notify} refresh={refresh} />
-      <StatsPanel state={state} setState={setState} health={health} notify={notify} refresh={refresh} />
-      <AiPanel notify={notify} refresh={refresh} />
-      <RulesPanel notify={notify} refresh={refresh} />
-      <DataPanel notify={notify} refresh={refresh} />
-      <DiagPanel state={state} refresh={refresh} />
+      <nav className="panel-nav" aria-label={t('nav.aria')}>
+        {panels.map((p) => (
+          <button key={p.id} className="panel-nav-btn" onClick={() => jumpTo(p.id)}>
+            {t(p.key)}
+          </button>
+        ))}
+      </nav>
+
+      <div id="panel-account">
+        <AccountPanel state={state} setState={setState} notify={notify} refresh={refresh} />
+      </div>
+      <div id="panel-stats">
+        <StatsPanel state={state} setState={setState} health={health} notify={notify} refresh={refresh} />
+      </div>
+      <div id="panel-ai">
+        <AiPanel notify={notify} refresh={refresh} />
+      </div>
+      <div id="panel-rules">
+        <RulesPanel notify={notify} refresh={refresh} />
+      </div>
+      <div id="panel-data">
+        <DataPanel notify={notify} refresh={refresh} />
+      </div>
+      <div id="panel-appearance">
+        <AppearancePanel notify={notify} />
+      </div>
+      <div id="panel-diag">
+        <DiagPanel state={state} refresh={refresh} />
+      </div>
 
       {msg && (
         <div className={msg.kind === 'ok' ? 'msg ok' : 'msg err'}>

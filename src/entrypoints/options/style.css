@@ -552,3 +552,32 @@ select {
   color: var(--accent);
   border-color: var(--accent);
 }
+
+
+/* ===== 设置分区锚点导航（洞察 F1：设置页过长 → sticky 顶栏一键跳转） ===== */
+.panel-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--bg, #f5f5f5) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  overflow-x: auto;
+}
+.panel-nav-btn {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.panel-nav-btn:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}

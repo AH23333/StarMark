@@ -308,5 +308,13 @@
   "opt.ai.clsStalled": "タスクが中断された可能性があります（ハートビートタイムアウト）。「AI 整理を続ける」で再開できます",
   "opt.ai.pendingCleanup": "旧バージョンのレビュー待ち提案が {n} 件あります",
   "opt.ai.pendingClear": "クリア",
-  "trending.searchApiFallback": "ページ解析が一時的に利用できず、GitHub Search API にフォールバックしました（多少差異あり）"
+  "trending.searchApiFallback": "ページ解析が一時的に利用できず、GitHub Search API にフォールバックしました（多少差異あり）",
+  "nav.account": "アカウントと同期",
+  "nav.stats": "統計とヘルス",
+  "nav.ai": "AI 整理",
+  "nav.rules": "タグルール",
+  "nav.data": "データとエクスポート",
+  "nav.appearance": "外観と言語",
+  "nav.diag": "診断",
+  "nav.aria": "設定セクションナビ"
 }
