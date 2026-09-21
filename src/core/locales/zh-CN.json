@@ -316,5 +316,7 @@
   "nav.data": "数据与导出",
   "nav.appearance": "外观与语言",
   "nav.diag": "诊断",
-  "nav.aria": "设置分区导航"
+  "nav.aria": "设置分区导航",
+  "tagBanner.matchCount": "匹配 {n} 条",
+  "tags.emptyFiltered": "没有匹配所选标签的条目 —— 试试在上方横幅移除部分标签"
 }

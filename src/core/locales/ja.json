@@ -316,5 +316,7 @@
   "nav.data": "データとエクスポート",
   "nav.appearance": "外観と言語",
   "nav.diag": "診断",
-  "nav.aria": "設定セクションナビ"
+  "nav.aria": "設定セクションナビ",
+  "tagBanner.matchCount": "{n} 件ヒット",
+  "tags.emptyFiltered": "選択したタグに一致する項目がありません —— 上部バナーでタグを外してみてください"
 }

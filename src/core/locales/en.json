@@ -316,5 +316,7 @@
   "nav.data": "Data & Export",
   "nav.appearance": "Appearance & Language",
   "nav.diag": "Diagnostics",
-  "nav.aria": "Settings section navigation"
+  "nav.aria": "Settings section navigation",
+  "tagBanner.matchCount": "{n} matched",
+  "tags.emptyFiltered": "No items match the selected tags — try removing some tags in the banner above"
 }

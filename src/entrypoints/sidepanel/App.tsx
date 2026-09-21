@@ -78,6 +78,8 @@ export default function App() {
   }>({ q: '', max: 500, source: 'all', includeHidden: false, sort: 'recent' })
 
   const [tagFilters, setTagFilters] = useState<string[]>([])
+  // 浏览模式（空查询）下按标签过滤后的匹配总数：让"过滤是否生效"在 UI 上可视化
+  const [browseTotal, setBrowseTotal] = useState(0)
   // 挂载期 effect 里的 onStorage 无法读取最新的 tagFilters，用 ref 跟随当前值
   const tagFiltersRef = useRef<string[]>([])
   tagFiltersRef.current = tagFilters
@@ -121,6 +123,7 @@ export default function App() {
         worker.postMessage({ type: 'tags' })
       } else if (e.data.type === 'results') {
         setHits(e.data.items)
+        setBrowseTotal(e.data.total ?? e.data.items.length)
       } else if (e.data.type === 'tree-result') {
         setTree(e.data.root)
       } else if (e.data.type === 'tags-result') {
@@ -447,10 +450,13 @@ export default function App() {
    *    （worker 的 search 同传 needle + tags，两条件叠加，见 doSearch 的 filters 链）。
    * 因此这里**不走文本搜索**：标签词不在标题/URL 时文本搜索会空手而归。
    */
-  const filterByTag = useCallback((tag: string) => {
-    setQuery('')
-    setTagFilters([tag])
-    setTab('tree')
+  /**
+   * 标签点击 = **纯多选切换**（toggle）：只改 tagFilters，不切视图、不清搜索词。
+   * 设计（发起人澄清）：用户在标签区连选多个标签后**主动**切回「文件夹」页签查看
+   * 按标签过滤的结果；随后仍可在搜索框输入关键词做**过滤内二次搜索**（needle+tags 叠加）。
+   */
+  const toggleTagFilter = useCallback((tag: string) => {
+    setTagFilters((prev) => (prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag]))
   }, [])
 
   const openCtx = (e: ReactMouseEvent<HTMLDivElement>, hit: SearchHit) => {
@@ -638,6 +644,7 @@ export default function App() {
               </button>
             ))}
             <span className="tag-banner-hint">{t('tagBanner.hint')}</span>
+            {!searching && <span className="tag-banner-count">{t('tagBanner.matchCount', { n: browseTotal })}</span>}
             <button className="btn mini" onClick={() => setTagFilters([])} title={t('tagBanner.clearTitle')}>
               {t('tagBanner.clear')}
             </button>
@@ -681,7 +688,6 @@ export default function App() {
                         style={{ color: tagColor(tg.name) }}
                         onClick={() => {
                           setTagFilters((prev) => (on ? prev.filter((x) => x !== tg.name) : [...prev, tg.name]))
-                          if (!on) setTab('tree')
                         }}
                         title={on ? t('tags.removeFilter', { tag: tg.name }) : t('tags.addFilter', { tag: tg.name })}
                       >
@@ -702,7 +708,11 @@ export default function App() {
               <div className="empty">{t('tree.loading')}</div>
             ) : tree.length === 0 ? (
               <div className="empty">
-                {state?.hasToken ? t('tree.emptyWithToken') : t('tree.emptyNoToken')}
+                {tagFilters.length > 0
+                  ? t('tags.emptyFiltered')
+                  : state?.hasToken
+                    ? t('tree.emptyWithToken')
+                    : t('tree.emptyNoToken')}
               </div>
             ) : (
               <>
@@ -720,7 +730,7 @@ export default function App() {
                       query={query}
                       dupIds={dupIds}
                       onUpdate={updateItem}
-                      onTagClick={filterByTag}
+                      onTagClick={toggleTagFilter}
                       onCtx={openCtx}
                       allTags={tagNames}
                       batchMode={batchMode}
@@ -781,7 +791,7 @@ export default function App() {
                     query={query}
                     isDup={dupIds.has(h.id)}
                     onUpdate={updateItem}
-                    onTagClick={filterByTag}
+                    onTagClick={toggleTagFilter}
                     onContextMenu={(e) => openCtx(e, h)}
                     showAvatar={prefs.letterAvatar !== false}
                     allTags={tagNames}
