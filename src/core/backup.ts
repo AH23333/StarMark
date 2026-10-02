@@ -90,6 +90,10 @@ export async function parseBackup(content: string, passphrase?: string): Promise
     }
   }
 
+  // 'starmark' 这个字面量是**已经写在用户磁盘上那些备份档里的线格式契约**，别为了"跟桌面版名字统一"改它（P-117）。
+  // 桌面那份是 'starmark-desktop'（StarMark.Core/Backup/BackupEnvelope.cs），两边载荷形状本就不兼容
+  // （items 层级、时间单位 ms↔s、type 字符串↔整数、扩展这份没有校验和），而 P-68 已裁决两库之间不建数据通道。
+  // 这两个字符串互不相同，恰恰是"拿错档喂错端"唯一拦得住的地方：名字一统一，读错档就从报错变成静默改库。
   if (parsed.app !== 'starmark' || !Array.isArray(parsed.items)) {
     throw new Error('不是 StarMark 备份文件')
   }
