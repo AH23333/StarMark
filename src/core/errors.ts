@@ -33,6 +33,14 @@ export class AiRateLimitError extends AppError {
   }
 }
 
+/** AI 单次请求超时（P-121）：fetch 挂起超过时限；与「暂停」中止不同，超时按失败处理 */
+export class AiTimeoutError extends AppError {
+  constructor(timeoutMs: number) {
+    super('ai.timeout', `AI 请求超时（${Math.round(timeoutMs / 1000)} 秒未返回）：本地模型推理过慢或网络挂起，可重试`, { timeoutMs })
+    this.name = 'AiTimeoutError'
+  }
+}
+
 /** Ollama 来源白名单拒绝（403），message 含 OLLAMA_ORIGINS 修复指引 */
 export class OllamaOriginError extends AppError {
   constructor(hint: string) {

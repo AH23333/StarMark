@@ -1,6 +1,6 @@
 ﻿import { browser } from 'wxt/browser'
-import { KEEPALIVE_MS } from '../constants'
-import { OllamaConnectError, OllamaOriginError } from '../errors'
+import { AI_REQUEST_TIMEOUT_MS, KEEPALIVE_MS } from '../constants'
+import { AiTimeoutError, OllamaConnectError, OllamaOriginError } from '../errors'
 
 /**
  * LLM Provider 抽象（开发技术文档 §17）：用户自带 Key（BYOK），默认关闭。
@@ -63,9 +63,9 @@ export function isAiConfigured(settings: AiSettings): boolean {
 }
 
 /** 给定条目文本，返回建议标签（纯 JSON 数组）。 */
-export async function suggestTagsViaAi(settings: AiSettings, prompt: string): Promise<string[]> {
+export async function suggestTagsViaAi(settings: AiSettings, prompt: string, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string[]> {
   if (!isAiConfigured(settings)) throw new AiDisabledError()
-  const content = await chat(settings, prompt)
+  const content = await chat(settings, prompt, false, undefined, timeoutMs)
   return parseTagsJson(content)
 }
 
@@ -125,68 +125,111 @@ export function parseTagsJson(raw: string): string[] {
 }
 
 /**
+ * 给单次 AI 请求加超时（P-121）：用户「暂停」信号与超时计时合并为一把信号——谁先到算谁。
+ * 超时与暂停的区分不依赖 abort reason 的命名（各环境实现不一），靠闭包里的 timedOut 标志。
+ * dispose() 必须在请求结束后调用（finally），否则计时器会一直挂着。
+ */
+function withTimeout(signal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; isTimeout: () => boolean; dispose: () => void } {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const onAbort = () => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+  }
+  return {
+    signal: controller.signal,
+    isTimeout: () => timedOut,
+    dispose: () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
+/**
  * 统一 chat 入口（全 Provider 挂心跳 + 可选中止信号）。
  * signal 用于"暂停/停止"：abort 后 fetch 立即断开，本地 Ollama 检测到客户端断开
  * 会停止当前推理（不再把整批算完）。
  */
-async function chat(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
-  if (settings.provider === 'anthropic') return keepAliveDuring(chatAnthropic(settings, prompt, signal))
-  if (settings.provider === 'ollama') return keepAliveDuring(chatOllama(settings, prompt, jsonMode, signal))
-  return keepAliveDuring(chatOpenAiCompatible(settings, prompt, jsonMode, signal))
+async function chat(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string> {
+  if (settings.provider === 'anthropic') return keepAliveDuring(chatAnthropic(settings, prompt, signal, timeoutMs))
+  if (settings.provider === 'ollama') return keepAliveDuring(chatOllama(settings, prompt, jsonMode, signal, timeoutMs))
+  return keepAliveDuring(chatOpenAiCompatible(settings, prompt, jsonMode, signal, timeoutMs))
 }
 
 /** 强制 JSON 输出的对话（批量分类用；Ollama 走 format:json，OpenAI 走 response_format）。 */
-export async function chatJson(settings: AiSettings, prompt: string, signal?: AbortSignal): Promise<string> {
-  return chat(settings, prompt, true, signal)
+export async function chatJson(settings: AiSettings, prompt: string, signal?: AbortSignal, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string> {
+  return chat(settings, prompt, true, signal, timeoutMs)
 }
 
-async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
+async function chatOpenAiCompatible(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string> {
   const base = (settings.baseUrl?.trim() || 'https://api.openai.com/v1').replace(/\/$/, '')
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.apiKey}`,
-    },
-    signal,
-    body: JSON.stringify({
-      model: settings.model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4000,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-    }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`AI 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+  const t = withTimeout(signal, timeoutMs)
+  try {
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      signal: t.signal,
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+        max_tokens: 4000,
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`AI 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+    }
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+    return data.choices?.[0]?.message?.content ?? ''
+  } catch (e) {
+    if (t.isTimeout()) throw new AiTimeoutError(timeoutMs)
+    throw e
+  } finally {
+    t.dispose()
   }
-  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
-  return data.choices?.[0]?.message?.content ?? ''
 }
 
-async function chatAnthropic(settings: AiSettings, prompt: string, signal?: AbortSignal): Promise<string> {
+async function chatAnthropic(settings: AiSettings, prompt: string, signal?: AbortSignal, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string> {
   const base = (settings.baseUrl?.trim() || 'https://api.anthropic.com').replace(/\/$/, '')
-  const res = await fetch(`${base}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': settings.apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    signal,
-    body: JSON.stringify({
-      model: settings.model || 'claude-3-5-haiku-latest',
-      max_tokens: 200,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  })
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    throw new Error(`AI 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+  const t = withTimeout(signal, timeoutMs)
+  try {
+    const res = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': settings.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      signal: t.signal,
+      body: JSON.stringify({
+        model: settings.model || 'claude-3-5-haiku-latest',
+        max_tokens: 200,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`AI 请求失败 (${res.status}) ${detail.slice(0, 160)}`)
+    }
+    const data = (await res.json()) as { content?: { text?: string }[] }
+    return data.content?.map((c) => c.text ?? '').join('') ?? ''
+  } catch (e) {
+    if (t.isTimeout()) throw new AiTimeoutError(timeoutMs)
+    throw e
+  } finally {
+    t.dispose()
   }
-  const data = (await res.json()) as { content?: { text?: string }[] }
-  return data.content?.map((c) => c.text ?? '').join('') ?? ''
 }
 
 /**
@@ -267,36 +310,46 @@ function ollamaOriginHint(): string {
   ].join('\n')
 }
 
-async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal): Promise<string> {
+async function chatOllama(settings: AiSettings, prompt: string, jsonMode = false, signal?: AbortSignal, timeoutMs = AI_REQUEST_TIMEOUT_MS): Promise<string> {
   const base = await ollamaBaseUrlOf(settings)
-  let res: Response
+  const t = withTimeout(signal, timeoutMs)
   try {
-    res = await fetch(`${base}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      body: JSON.stringify({
-        model: settings.model || 'llama3.2',
-        messages: [{ role: 'user', content: prompt }],
-        stream: false,
-        format: jsonMode ? 'json' : undefined,
-        options: { temperature: 0.2, num_ctx: 8192 },
-      }),
-    })
+    let res: Response
+    try {
+      res = await fetch(`${base}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: t.signal,
+        body: JSON.stringify({
+          model: settings.model || 'llama3.2',
+          messages: [{ role: 'user', content: prompt }],
+          stream: false,
+          format: jsonMode ? 'json' : undefined,
+          options: { temperature: 0.2, num_ctx: 8192 },
+        }),
+      })
+    } catch (e) {
+      // 超时（P-121）优先判定：既不是「连接失败」也不是「暂停」，按请求失败处理
+      if (t.isTimeout()) throw new AiTimeoutError(timeoutMs)
+      // 用户主动中止（暂停）：原样透传 AbortError，让上层按"优雅停止"处理
+      if ((e as Error).name === 'AbortError') throw e
+      // fetch 层失败（连接拒绝 / IPv6 歧义 / 浏览器策略拦截）：给可操作的上下文
+      throw new OllamaConnectError(base, (e as Error).message)
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      if (res.status === 404) throw new Error('Ollama 端点不存在（已尝试 ' + base + '/api/chat）：请确认服务已启动（ollama serve）且地址正确')
+      if (res.status === 403) throw new OllamaOriginError(ollamaOriginHint())
+      throw new Error(`Ollama 请求失败 (${base}/api/chat -> ${res.status}) ${detail.slice(0, 160)}`)
+    }
+    const data = (await res.json()) as { message?: { content?: string } }
+    return data.message?.content ?? ''
   } catch (e) {
-    // 用户主动中止（暂停）：原样透传 AbortError，让上层按"优雅停止"处理
-    if ((e as Error).name === 'AbortError') throw e
-    // fetch 层失败（连接拒绝 / IPv6 歧义 / 浏览器策略拦截）：给可操作的上下文
-    throw new OllamaConnectError(base, (e as Error).message)
+    if (t.isTimeout()) throw new AiTimeoutError(timeoutMs)
+    throw e
+  } finally {
+    t.dispose()
   }
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '')
-    if (res.status === 404) throw new Error('Ollama 端点不存在（已尝试 ' + base + '/api/chat）：请确认服务已启动（ollama serve）且地址正确')
-    if (res.status === 403) throw new OllamaOriginError(ollamaOriginHint())
-    throw new Error(`Ollama 请求失败 (${base}/api/chat -> ${res.status}) ${detail.slice(0, 160)}`)
-  }
-  const data = (await res.json()) as { message?: { content?: string } }
-  return data.message?.content ?? ''
 }
 
 /** 连接测试：列出本地可用模型，用于设置页"测试连接"。返回模型名列表。 */

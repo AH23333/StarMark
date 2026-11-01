@@ -21,6 +21,9 @@ export const KEEPALIVE_MS = 20_000
 /** 后台任务僵尸判定阈值：running 但 lastBeatAt 超过该值视为被 SW 回收 */
 export const ZOMBIE_AFTER_MS = 180_000
 
+/** AI 单次请求超时（P-121）：fetch 挂起不再无限等；数值与桌面侧 180 s/批 的稳定性取向对齐 */
+export const AI_REQUEST_TIMEOUT_MS = 180_000
+
 /** worker 搜索快照持久化防抖 */
 export const SNAPSHOT_DEBOUNCE_MS = 4000
 
