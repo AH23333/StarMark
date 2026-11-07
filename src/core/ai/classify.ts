@@ -26,6 +26,8 @@ export interface ClassifyResult {
   assignments: Record<string, string[]>
   /** 模型未覆盖的条目数 */
   unmatched: number
+  /** 因单轮批次上限（CLASSIFY_BATCH_SIZE×CLASSIFY_MAX_BATCHES）未参与本轮的条目数 */
+  truncated?: number
 }
 
 export interface ClassifyState {
@@ -63,6 +65,7 @@ export async function getClassifyResult(): Promise<ClassifyResult | undefined> {
     assignments: raw.assignments ?? {},
     groups: Array.isArray(raw.groups) ? raw.groups : [],
     unmatched: raw.unmatched ?? 0,
+    truncated: raw.truncated ?? 0,
   }
 }
 
@@ -291,6 +294,9 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
   try {
     const items = (await allItems()).filter((i) => !i.hidden)
     const batches = chunk(items, CLASSIFY_BATCH_SIZE).slice(0, CLASSIFY_MAX_BATCHES)
+    // 单轮上限截断数（P-120）：超出 50×40 的条目静默不参与 —— 记下来让 UI 可见地说出来
+    const processedItems = batches.reduce((n, b) => n + b.length, 0)
+    const truncated = items.length - processedItems
     state.totalBatches = batches.length
     state.lastBeatAt = Date.now()
     await setClassifyState(state)
@@ -306,6 +312,7 @@ async function runClassifyLoop(settings: AiSettings, state: ClassifyState): Prom
     }
     result.model = settings.model
     result.totalItems = items.length
+    result.truncated = truncated
 
     for (let bi = state.batch; bi < batches.length; bi++) {
       // 暂停：批边界优雅停止，保留 batch 断点（paused 态，再次触发从 bi 继续）
@@ -472,6 +479,7 @@ export async function importClassifications(json: string): Promise<ClassifyResul
     groups: Array.isArray(raw.groups) ? raw.groups : groupsFromAssignments(raw.assignments),
     assignments: raw.assignments,
     unmatched: 0,
+    truncated: 0,
   }
   await saveClassifyResult(result)
   return result

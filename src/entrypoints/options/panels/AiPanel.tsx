@@ -69,7 +69,13 @@ export default function AiPanel({ notify, refresh }: { notify: Notify; refresh: 
         setClassifyBusy(false)
         if (res.classifyState.paused) notify('ok', t('opt.ai.clsPaused'))
         else if (res.classifyState.error) notify('err', t('opt.ai.clsRunFailed', { err: res.classifyState.error }))
-        else notify('ok', t('opt.ai.clsDone', { batches: res.classifyState.batch ?? 0 }))
+        else {
+          notify('ok', t('opt.ai.clsDone', { batches: res.classifyState.batch ?? 0 }))
+          // P-120：单轮上限截断必须当面说（第 2001 条起不再静默跳过）
+          if ((res.classifyResult?.truncated ?? 0) > 0) {
+            notify('err', t('opt.ai.clsTruncated', { n: res.classifyResult?.truncated ?? 0 }))
+          }
+        }
         return
       }
       const beat = res.classifyState?.lastBeatAt ?? 0
@@ -261,6 +267,9 @@ export default function AiPanel({ notify, refresh }: { notify: Notify; refresh: 
             </span>
           )}
         </div>
+        {(classifyResult?.truncated ?? 0) > 0 && (
+          <p className="warn-text">{t('opt.ai.clsTruncated', { n: classifyResult?.truncated ?? 0 })}</p>
+        )}
       </div>
 
       {classifyResult && Array.isArray(classifyResult.groups) && classifyResult.groups.length > 0 && (

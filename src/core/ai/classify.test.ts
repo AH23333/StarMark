@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 ﻿import 'fake-indexeddb/auto'
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { buildClassifyPrompt, groupsFromAssignments, parseClassifyResponse, seedCategories, runClassify, pauseClassify, getClassifyState } from './classify'
+import { buildClassifyPrompt, groupsFromAssignments, parseClassifyResponse, seedCategories, runClassify, pauseClassify, getClassifyState, getClassifyResult } from './classify'
 import { db, upsertItems } from '../db'
 import type { StarItem } from '../types'
 
@@ -185,5 +185,56 @@ describe('批量分类暂停与断点（UI 合并后单一入口的回归）', (
     const stopped = await pauseClassify()
     expect(stopped.running).toBe(false)
     expect(stopped.paused).toBe(true)
+  })
+})
+
+describe('单轮上限截断要报数（P-120：第 2001 条起不再静默跳过）', () => {
+  it('2001 条 → 只跑 40 批，result.truncated=1、totalItems=2001（截断写进结果供 UI 可见）', async () => {
+    const items = Array.from({ length: 2001 }, (_, i) => mk(`t${i}`))
+    await upsertItems(items)
+    const { saveAiSettings } = await import('./provider')
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      return { ok: true, status: 200, json: async () => '{"items":[]}' }
+    }))
+
+    await runClassify()
+    let st = await getClassifyState()
+    for (let i = 0; i < 500 && st.running; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      st = await getClassifyState()
+    }
+    expect(st.running).toBe(false)
+    expect(st.batch).toBe(40) // 40 批封顶，第 41 批（那 1 条）从未发起
+    expect(call).toBe(40)
+    const result = await getClassifyResult()
+    expect(result?.totalItems).toBe(2001) // 全量如实记录
+    expect(result?.truncated).toBe(1) // 截断数写进结果 → UI 常驻提示 + 完成通知
+  })
+
+  it('未触上限（51 条 → 2 批）：truncated=0 不误报', async () => {
+    const items = Array.from({ length: 51 }, (_, i) => mk(`u${i}`))
+    await upsertItems(items)
+    const { saveAiSettings } = await import('./provider')
+    await saveAiSettings({ enabled: true, provider: 'openai', apiKey: 'k', model: 'm' })
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++
+      return { ok: true, status: 200, json: async () => '{"items":[]}' }
+    }))
+
+    await runClassify()
+    let st = await getClassifyState()
+    for (let i = 0; i < 500 && st.running; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      st = await getClassifyState()
+    }
+    expect(st.running).toBe(false)
+    expect(st.batch).toBe(2)
+    expect(call).toBe(2)
+    const result = await getClassifyResult()
+    expect(result?.truncated).toBe(0)
   })
 })
